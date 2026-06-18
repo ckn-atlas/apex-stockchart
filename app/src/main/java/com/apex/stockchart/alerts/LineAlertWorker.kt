@@ -1,4 +1,4 @@
-package com.stockchart.android.alerts
+﻿package com.apex.stockchart.alerts
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -13,9 +13,9 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.stockchart.android.R
-import com.stockchart.android.data.Candle
-import com.stockchart.android.data.SettingsRepository
+import com.apex.stockchart.R
+import com.apex.stockchart.data.Candle
+import com.apex.stockchart.data.SettingsRepository
 import kotlinx.coroutines.flow.first
 import java.util.concurrent.TimeUnit
 import kotlin.math.sin

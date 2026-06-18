@@ -1,4 +1,4 @@
-package com.stockchart.android
+﻿package com.apex.stockchart
 
 import android.Manifest
 import android.content.pm.ActivityInfo
@@ -16,14 +16,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.stockchart.android.alerts.scheduleLineAlerts
-import com.stockchart.android.data.AppSettings
-import com.stockchart.android.data.Candle
-import com.stockchart.android.data.OrientationMode
-import com.stockchart.android.data.SettingsRepository
-import com.stockchart.android.data.StockDataRepository
-import com.stockchart.android.data.TickerSuggestion
-import com.stockchart.android.ui.ChartScreen
+import com.apex.stockchart.alerts.scheduleLineAlerts
+import com.apex.stockchart.data.AppSettings
+import com.apex.stockchart.data.Candle
+import com.apex.stockchart.data.OrientationMode
+import com.apex.stockchart.data.SettingsRepository
+import com.apex.stockchart.data.StockDataRepository
+import com.apex.stockchart.data.TickerSuggestion
+import com.apex.stockchart.ui.ChartScreen
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlin.math.abs

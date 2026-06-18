@@ -1,4 +1,4 @@
-package com.stockchart.android.data
+﻿package com.apex.stockchart.data
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

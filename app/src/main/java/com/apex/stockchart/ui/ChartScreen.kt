@@ -1,4 +1,4 @@
-package com.stockchart.android.ui
+﻿package com.apex.stockchart.ui
 
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
@@ -84,11 +84,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.stockchart.android.data.AppSettings
-import com.stockchart.android.data.Candle
-import com.stockchart.android.data.OrientationMode
-import com.stockchart.android.data.TickerSuggestion
-import com.stockchart.android.data.UserLine
+import com.apex.stockchart.data.AppSettings
+import com.apex.stockchart.data.Candle
+import com.apex.stockchart.data.OrientationMode
+import com.apex.stockchart.data.TickerSuggestion
+import com.apex.stockchart.data.UserLine
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
