@@ -1849,6 +1849,38 @@ private fun StockChartCanvas(
                         } while (event.changes.any { it.pressed })
                     }
                 }
+                .pointerInput(mode, freeMoveZoom, canvasSize) {
+                    if (freeMoveZoom || mode != ChartMode.None) return@pointerInput
+                    awaitEachGesture {
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressedCount = event.changes.count { it.pressed }
+                            if (pressedCount >= 2 && canvasSize.width > 0) {
+                                candleTooltip = null
+                                lineTooltip = null
+                                isPanning = true
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                val pan = event.calculatePan()
+                                val zoom = event.calculateZoom().coerceIn(0.2f, 5f)
+                                val xSpan = (liveRangeEnd - liveRangeStart).coerceAtLeast(0.5f)
+                                val zoomedXSpan = (xSpan / zoom).coerceIn(0.3f, 100f)
+                                val xFocus = (centroid.x / canvasSize.width.toFloat()).coerceIn(0f, 1f)
+                                val xFocusValue = liveRangeStart + xSpan * xFocus
+                                var nextStart = xFocusValue - zoomedXSpan * xFocus
+                                nextStart += -pan.x / canvasSize.width.toFloat() * zoomedXSpan
+                                nextStart = nextStart.coerceIn(0f, FUTURE_RANGE_START_LIMIT)
+                                liveRangeStart = nextStart
+                                liveRangeEnd = nextStart + zoomedXSpan
+                                onPanRange(liveRangeStart, liveRangeEnd)
+                                event.changes.forEach { it.consume() }
+                            }
+                        } while (event.changes.any { it.pressed })
+                        if (isPanning) {
+                            isPanning = false
+                            onPanFinished(liveRangeStart, liveRangeEnd)
+                        }
+                    }
+                }
                 .pointerInput(
                     mode,
                     freeMoveZoom,
@@ -2125,7 +2157,7 @@ private fun StockChartCanvas(
                 val x2 = mapper.xForTime(line.endTimeMillis)
                 val y1 = mapper.y(line.startPrice)
                 val y2 = mapper.y(line.endPrice)
-                drawLine(
+                drawClippedLine(
                     color = if (selected) Color(0xFFA6E3A1) else argbColor(line.color),
                     start = Offset(x1, y1),
                     end = Offset(x2, y2),
@@ -2523,8 +2555,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawProjection(
     listOf(projection.first, projection.second).forEach { line ->
         val anchor = line.futureAnchor()
         val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
-        drawLine(halo, start, star, strokeWidth = settings.lineWidth + 2.2f, cap = StrokeCap.Round)
-        drawLine(color, start, star, strokeWidth = settings.lineWidth + 0.8f, cap = StrokeCap.Round)
+        drawClippedLine(halo, start, star, strokeWidth = settings.lineWidth + 2.2f, cap = StrokeCap.Round)
+        drawClippedLine(color, start, star, strokeWidth = settings.lineWidth + 0.8f, cap = StrokeCap.Round)
     }
     drawStar(star, settings.starSize, color)
     val paint = Paint().apply {
@@ -2534,6 +2566,91 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawProjection(
     }
     drawContext.canvas.nativeCanvas.drawText(DATE_FORMAT.format(Date(projection.timeMillis)), star.x + 12f, star.y - 4f, paint)
     drawContext.canvas.nativeCanvas.drawText("$${"%.1f".format(projection.price)}", star.x + 12f, star.y + 24f, paint)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawClippedLine(
+    color: Color,
+    start: Offset,
+    end: Offset,
+    strokeWidth: Float,
+    cap: StrokeCap = StrokeCap.Butt,
+) {
+    val clipped = clipLineToRect(start, end, 0f, 0f, size.width, size.height) ?: return
+    drawLine(
+        color = color,
+        start = clipped.first,
+        end = clipped.second,
+        strokeWidth = strokeWidth,
+        cap = cap,
+    )
+}
+
+private fun clipLineToRect(
+    start: Offset,
+    end: Offset,
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+): Pair<Offset, Offset>? {
+    var x0 = start.x
+    var y0 = start.y
+    var x1 = end.x
+    var y1 = end.y
+
+    fun outCode(x: Float, y: Float): Int {
+        var code = 0
+        if (x < left) code = code or 1
+        if (x > right) code = code or 2
+        if (y < top) code = code or 4
+        if (y > bottom) code = code or 8
+        return code
+    }
+
+    var code0 = outCode(x0, y0)
+    var code1 = outCode(x1, y1)
+    while (true) {
+        if ((code0 or code1) == 0) {
+            return Offset(x0, y0) to Offset(x1, y1)
+        }
+        if ((code0 and code1) != 0) return null
+        val out = if (code0 != 0) code0 else code1
+        val dx = x1 - x0
+        val dy = y1 - y0
+        val x: Float
+        val y: Float
+        when {
+            (out and 8) != 0 -> {
+                if (dy == 0f) return null
+                x = x0 + dx * (bottom - y0) / dy
+                y = bottom
+            }
+            (out and 4) != 0 -> {
+                if (dy == 0f) return null
+                x = x0 + dx * (top - y0) / dy
+                y = top
+            }
+            (out and 2) != 0 -> {
+                if (dx == 0f) return null
+                y = y0 + dy * (right - x0) / dx
+                x = right
+            }
+            else -> {
+                if (dx == 0f) return null
+                y = y0 + dy * (left - x0) / dx
+                x = left
+            }
+        }
+        if (out == code0) {
+            x0 = x
+            y0 = y
+            code0 = outCode(x0, y0)
+        } else {
+            x1 = x
+            y1 = y
+            code1 = outCode(x1, y1)
+        }
+    }
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
@@ -2547,7 +2664,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
     val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
     val endX = mapper.forecastDrawEndX(line, forecast?.queryTimeMillis)
     val endY = mapper.yForVisualLineAtX(line, endX) ?: return
-    drawLine(color, start, Offset(endX, endY), strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
+    drawClippedLine(color, start, Offset(endX, endY), strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
 
     forecast?.let {
         val point = Offset(mapper.xForTime(it.queryTimeMillis), mapper.y(it.queryPrice))
@@ -2713,14 +2830,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPattern(
     val conv = Offset(mapper.xForTime(pattern.convergence.timeMillis), mapper.y(pattern.convergence.price))
     val points = listOf(pattern.upperA, pattern.upperB, pattern.lowerA, pattern.lowerB)
 
-    drawLine(
+    drawClippedLine(
         alphaColor,
         Offset(mapper.xForTime(pattern.upperA.timeMillis), mapper.y(pattern.upperA.price)),
         conv,
         strokeWidth = lineWidth,
         cap = StrokeCap.Round,
     )
-    drawLine(
+    drawClippedLine(
         alphaColor,
         Offset(mapper.xForTime(pattern.lowerA.timeMillis), mapper.y(pattern.lowerA.price)),
         conv,
