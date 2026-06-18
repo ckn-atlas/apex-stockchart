@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -43,7 +44,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -66,6 +66,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -97,6 +98,7 @@ import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 private enum class ChartMode {
@@ -268,7 +270,7 @@ fun ChartScreen(
     val visibleProjections = projections.filter { it.isCurrentSymbolProjection() }
     val visibleSavedPatterns = savedPatterns.filter { it.isCurrentSymbolPattern() }
     val displayPatterns = visibleSavedPatterns.map { DisplayPattern(it.id, it.pattern, saved = true) } +
-        if (committedBox != null) {
+        if (patterns.isNotEmpty()) {
             patterns.mapIndexed { index, pattern -> DisplayPattern("D-$index", pattern, saved = false) }
         } else {
             emptyList()
@@ -425,7 +427,7 @@ fun ChartScreen(
     }
 
     @Composable
-    fun ToolbarPanel(modifier: Modifier = Modifier) {
+    fun ToolbarPanel(modifier: Modifier = Modifier, compactVertical: Boolean = false) {
         Box(modifier = modifier) {
             TopToolbar(
                 ticker = settings.ticker,
@@ -433,8 +435,11 @@ fun ChartScreen(
                 lastPrice = latestCandle?.close,
                 lastChange = latestChange,
                 lastChangePercent = latestChangePercent,
+                accentColor = settings.candleColor,
+                backgroundColor = settings.backgroundColor,
                 mode = chartMode,
                 canConnectLines = visibleLines.size >= 2,
+                canForecastLine = visibleLines.isNotEmpty(),
                 onTickerChanged = onSaveTicker,
                 onTickerSearchTextChanged = onTickerSearchTextChanged,
                 tickerSuggestions = tickerSuggestions,
@@ -443,6 +448,7 @@ fun ChartScreen(
                     onSaveTimeframe(it)
                 },
                 onPickMode = ::selectMode,
+                onShowMessage = { transientMessage = it },
                 onClearLines = {
                     pendingAnchor = null
                     undoStack = undoStack + listOf(lines)
@@ -462,6 +468,7 @@ fun ChartScreen(
                     onReplaceLines(lines.filterNot { it.isCurrentSymbolLine() })
                 },
                 onOpenSettings = { showSettings = true },
+                compactVertical = compactVertical,
             )
         }
     }
@@ -469,14 +476,7 @@ fun ChartScreen(
     @Composable
     fun ChartPanel(modifier: Modifier = Modifier) {
             Box(
-                modifier = modifier
-                    .shadow(8.dp, RoundedCornerShape(10.dp), clip = false, ambientColor = Color(0x331468FF), spotColor = Color(0x331468FF))
-                    .background(
-                        Brush.verticalGradient(listOf(Color(0xBB101522), Color(0x99101622))),
-                        RoundedCornerShape(10.dp),
-                    )
-                    .border(1.dp, Color(0xFF28314A), RoundedCornerShape(10.dp))
-                    .padding(1.dp),
+                modifier = modifier,
             ) {
                 StockChartCanvas(
                     candles = candles,
@@ -513,6 +513,7 @@ fun ChartScreen(
                                     startPrice = first.price,
                                     endTimeMillis = anchor.timeMillis,
                                     endPrice = anchor.price,
+                                    color = contrastLineColors(settings.backgroundColor)[visibleLines.size % contrastLineColors(settings.backgroundColor).size],
                                 ),
                             )
                             pendingAnchor = null
@@ -648,7 +649,7 @@ fun ChartScreen(
                 }
                 if (patterns.isNotEmpty() || visibleSavedPatterns.isNotEmpty() || visibleForecastLines.isNotEmpty()) {
                     PatternPanel(
-                        detectedPatterns = if (committedBox != null) patterns else emptyList(),
+                        detectedPatterns = patterns,
                         savedPatterns = visibleSavedPatterns,
                         savedForecastLines = visibleForecastLines,
                         activeDetectedIndex = activePatternIndex,
@@ -784,11 +785,11 @@ fun ChartScreen(
                             .fillMaxHeight()
                             .verticalScroll(rememberScrollState()),
                     ) {
-                        ToolbarPanel(Modifier.fillMaxWidth())
+                        ToolbarPanel(Modifier.fillMaxWidth(), compactVertical = true)
                     }
                     Column(
                         modifier = Modifier
-                            .weight(3f)
+                            .weight(4f)
                             .fillMaxHeight(),
                     ) {
                         ChartPanel(
@@ -844,6 +845,10 @@ fun ChartScreen(
                 onSaveLineWidth = onSaveLineWidth,
                 onSavePointSize = onSavePointSize,
                 onSaveStarSize = onSaveStarSize,
+                onGuideUpdating = {
+                    showSettings = false
+                    transientMessage = "가이드는 업데이트 중입니다."
+                },
             )
         }
 
@@ -948,19 +953,27 @@ private fun TopToolbar(
     lastPrice: Float?,
     lastChange: Float?,
     lastChangePercent: Float?,
+    accentColor: Long,
+    backgroundColor: Long,
     mode: ChartMode,
     canConnectLines: Boolean,
+    canForecastLine: Boolean,
     onTickerChanged: (String) -> Unit,
     onTickerSearchTextChanged: (String) -> Unit,
     tickerSuggestions: List<TickerSuggestion>,
     onPickTimeframe: (String) -> Unit,
     onPickMode: (ChartMode) -> Unit,
+    onShowMessage: (String) -> Unit,
     onClearLines: () -> Unit,
     onOpenSettings: () -> Unit,
+    compactVertical: Boolean = false,
 ) {
     var tickerField by remember(ticker) {
         mutableStateOf(TextFieldValue(ticker, selection = TextRange(ticker.length)))
     }
+    val tickerAccent = argbColor(accentColor)
+    val tickerTextColor = argbColor(readableAccentColor(accentColor, backgroundColor))
+    val tickerAccentSoft = tickerAccent.copy(alpha = 0.68f)
 
     fun commitTicker() {
         val next = tickerField.text.trim().uppercase()
@@ -974,51 +987,61 @@ private fun TopToolbar(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
+        if (compactVertical) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                TickerInputField(
+                    value = tickerField,
+                    onValueChange = {
+                        tickerField = it.copy(text = it.text.uppercase())
+                        onTickerSearchTextChanged(it.text)
+                    },
+                    onCommit = { commitTicker() },
+                    textColor = tickerTextColor,
+                    accentColor = tickerAccent,
+                    accentSoftColor = tickerAccentSoft,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                )
+                GlowActionButton(
+                    text = "검색",
+                    icon = Icons.Filled.Search,
+                    onClick = { commitTicker() },
+                    modifier = Modifier
+                        .height(44.dp),
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+            TickerInputField(
                 value = tickerField,
                 onValueChange = {
                     tickerField = it.copy(text = it.text.uppercase())
                     onTickerSearchTextChanged(it.text)
                 },
-                singleLine = true,
-                textStyle = LocalTextStyle.current.copy(
-                    color = Color(0xFFE5E7FF),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                ),
-                label = { Text("티커") },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { commitTicker() }),
+                onCommit = { commitTicker() },
+                textColor = tickerTextColor,
+                accentColor = tickerAccent,
+                accentSoftColor = tickerAccentSoft,
                 modifier = Modifier
                     .weight(1f)
-                    .height(40.dp)
-                    .onFocusChanged {
-                        if (it.isFocused) {
-                            tickerField = tickerField.copy(
-                                selection = TextRange(0, tickerField.text.length),
-                            )
-                        }
-                    }
-                    .onPreviewKeyEvent {
-                        if (it.key == Key.Enter) {
-                            commitTicker()
-                            true
-                        } else {
-                            false
-                        }
-                    },
+                    .height(44.dp),
             )
             GlowActionButton(
                 text = "검색",
                 icon = Icons.Filled.Search,
                 onClick = { commitTicker() },
-                modifier = Modifier.height(40.dp),
+                modifier = Modifier.height(44.dp),
             )
+            }
         }
         if (tickerSuggestions.isNotEmpty()) {
             Column(
@@ -1028,6 +1051,7 @@ private fun TopToolbar(
                 tickerSuggestions.take(5).forEach { suggestion ->
                     TickerSuggestionButton(
                         suggestion = suggestion,
+                        accentColor = accentColor,
                         onClick = {
                             tickerField = TextFieldValue(
                                 suggestion.symbol,
@@ -1045,49 +1069,121 @@ private fun TopToolbar(
             lastPrice = lastPrice,
             lastChange = lastChange,
             lastChangePercent = lastChangePercent,
+            compactVertical = compactVertical,
+            accentColor = accentColor,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        if (compactVertical) {
             Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(32.dp)
-                    .background(Color(0xCC1B1E2C), RoundedCornerShape(8.dp))
-                    .border(1.dp, Color(0xFF252A3D), RoundedCornerShape(8.dp))
-                    .padding(2.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                TimeframeSegment("일봉", timeframe == "D", Modifier.weight(1f)) { onPickTimeframe("D") }
-                TimeframeSegment("주봉", timeframe == "W", Modifier.weight(1f)) { onPickTimeframe("W") }
-                TimeframeSegment("월봉", timeframe == "M", Modifier.weight(1f)) { onPickTimeframe("M") }
+                TimeframeSegment("일", timeframe == "D", Modifier.weight(1f)) { onPickTimeframe("D") }
+                TimeframeSegment("주", timeframe == "W", Modifier.weight(1f)) { onPickTimeframe("W") }
+                TimeframeSegment("월", timeframe == "M", Modifier.weight(1f)) { onPickTimeframe("M") }
+                ToolIconButton(Icons.Filled.Settings, onOpenSettings)
             }
-            ToolIconButton(Icons.Filled.Settings, onOpenSettings)
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(32.dp)
+                        .background(Color(0xCC1B1E2C), RoundedCornerShape(8.dp))
+                        .border(1.dp, Color(0xFF252A3D), RoundedCornerShape(8.dp))
+                        .padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TimeframeSegment("일봉", timeframe == "D", Modifier.weight(1f)) { onPickTimeframe("D") }
+                    TimeframeSegment("주봉", timeframe == "W", Modifier.weight(1f)) { onPickTimeframe("W") }
+                    TimeframeSegment("월봉", timeframe == "M", Modifier.weight(1f)) { onPickTimeframe("M") }
+                }
+                ToolIconButton(Icons.Filled.Settings, onOpenSettings)
+            }
         }
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                ToolbarButton(Icons.Filled.CropFree, "분석영역", mode == ChartMode.BoxSelect, { onPickMode(ChartMode.BoxSelect) }, Modifier.weight(1f))
-                ToolbarButton(Icons.Filled.Edit, "선그리기", mode == ChartMode.DrawLine, { onPickMode(ChartMode.DrawLine) }, Modifier.weight(1f))
-                ToolbarButton(Icons.Filled.Timeline, "선잇기", mode == ChartMode.ConnectLines, { if (canConnectLines) onPickMode(ChartMode.ConnectLines) }, Modifier.weight(1f))
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                ToolbarButton(Icons.Filled.Delete, "선삭제", mode == ChartMode.DeleteLine, { onPickMode(ChartMode.DeleteLine) }, Modifier.weight(1f))
-                ToolbarButton(Icons.Filled.ShowChart, "가격예측", mode == ChartMode.ForecastLine, { onPickMode(ChartMode.ForecastLine) }, Modifier.weight(1f))
-                ToolbarButton(Icons.Filled.Refresh, "초기화", false, onClearLines, Modifier.weight(1f))
+            if (compactVertical) {
+                ToolbarButton(Icons.Filled.CropFree, "분석영역", mode == ChartMode.BoxSelect, { onPickMode(ChartMode.BoxSelect) }, Modifier.fillMaxWidth())
+                ToolbarButton(Icons.Filled.Edit, "선그리기", mode == ChartMode.DrawLine, { onPickMode(ChartMode.DrawLine) }, Modifier.fillMaxWidth())
+                ToolbarButton(
+                    Icons.Filled.Timeline,
+                    "선잇기",
+                    mode == ChartMode.ConnectLines,
+                    {
+                        if (canConnectLines) {
+                            onPickMode(ChartMode.ConnectLines)
+                        } else {
+                            onShowMessage("선그리기로 최소 추세선 2개를 그려주세요.")
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                )
+                ToolbarButton(Icons.Filled.Delete, "선삭제", mode == ChartMode.DeleteLine, { onPickMode(ChartMode.DeleteLine) }, Modifier.fillMaxWidth())
+                ToolbarButton(
+                    Icons.Filled.ShowChart,
+                    "가격예측",
+                    mode == ChartMode.ForecastLine,
+                    {
+                        if (canForecastLine || mode == ChartMode.ForecastLine) {
+                            onPickMode(ChartMode.ForecastLine)
+                        } else {
+                            onShowMessage("선그리기로 추세선 1개를 그려주세요.")
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                )
+                ToolbarButton(Icons.Filled.Refresh, "초기화", false, onClearLines, Modifier.fillMaxWidth())
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    ToolbarButton(Icons.Filled.CropFree, "분석영역", mode == ChartMode.BoxSelect, { onPickMode(ChartMode.BoxSelect) }, Modifier.weight(1f))
+                    ToolbarButton(Icons.Filled.Edit, "선그리기", mode == ChartMode.DrawLine, { onPickMode(ChartMode.DrawLine) }, Modifier.weight(1f))
+                    ToolbarButton(
+                        Icons.Filled.Timeline,
+                        "선잇기",
+                        mode == ChartMode.ConnectLines,
+                        {
+                            if (canConnectLines) {
+                                onPickMode(ChartMode.ConnectLines)
+                            } else {
+                                onShowMessage("선그리기로 최소 추세선 2개를 그려주세요.")
+                            }
+                        },
+                        Modifier.weight(1f),
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    ToolbarButton(Icons.Filled.Delete, "선삭제", mode == ChartMode.DeleteLine, { onPickMode(ChartMode.DeleteLine) }, Modifier.weight(1f))
+                    ToolbarButton(
+                        Icons.Filled.ShowChart,
+                        "가격예측",
+                        mode == ChartMode.ForecastLine,
+                        {
+                            if (canForecastLine || mode == ChartMode.ForecastLine) {
+                                onPickMode(ChartMode.ForecastLine)
+                            } else {
+                                onShowMessage("선그리기로 추세선 1개를 그려주세요.")
+                            }
+                        },
+                        Modifier.weight(1f),
+                    )
+                    ToolbarButton(Icons.Filled.Refresh, "초기화", false, onClearLines, Modifier.weight(1f))
+                }
             }
         }
     }
@@ -1142,7 +1238,51 @@ private fun StockSummaryRow(
     lastPrice: Float?,
     lastChange: Float?,
     lastChangePercent: Float?,
+    compactVertical: Boolean = false,
+    accentColor: Long,
 ) {
+    val accent = argbColor(accentColor)
+    val accentSoft = accent.copy(alpha = 0.72f)
+    if (compactVertical) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                text = if (ticker == "GUIDE") "Interactive Walkthrough" else "$ticker  •  US Stock",
+                color = accentSoft,
+                fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 1,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                lastPrice?.let { price ->
+                    Text(
+                        text = "$${"%.2f".format(price)}",
+                        color = Color(0xFFE5E7FF),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                if (lastChange != null && lastChangePercent != null) {
+                    val positive = lastChange >= 0f
+                    Text(
+                        text = "${if (positive) "+" else ""}${"%.2f".format(lastChange)} (${if (positive) "+" else ""}${"%.2f".format(lastChangePercent)}%)",
+                        color = if (positive) Color(0xFF1E88FF) else Color(0xFFEF5350),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        return
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -1150,7 +1290,7 @@ private fun StockSummaryRow(
     ) {
         Text(
             text = if (ticker == "GUIDE") "Interactive Walkthrough" else "$ticker  •  US Stock",
-            color = Color(0xFFA9B1D6),
+            color = accentSoft,
             fontSize = 13.sp,
             modifier = Modifier.weight(1f),
             maxLines = 1,
@@ -1173,6 +1313,70 @@ private fun StockSummaryRow(
             )
         }
     }
+}
+
+@Composable
+private fun TickerInputField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    onCommit: () -> Unit,
+    textColor: Color,
+    accentColor: Color,
+    accentSoftColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = LocalTextStyle.current.copy(
+            color = textColor,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+        ),
+        cursorBrush = SolidColor(accentColor),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onCommit() }),
+        modifier = modifier
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) {
+                    onValueChange(value.copy(selection = TextRange(0, value.text.length)))
+                }
+            }
+            .onPreviewKeyEvent {
+                if (it.key == Key.Enter) {
+                    onCommit()
+                    true
+                } else {
+                    false
+                }
+            },
+        decorationBox = { innerTextField ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(
+                        width = if (focused) 2.dp else 1.dp,
+                        color = if (focused) accentColor else accentSoftColor,
+                        shape = RoundedCornerShape(7.dp),
+                    )
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (value.text.isBlank()) {
+                    Text(
+                        text = "티커",
+                        color = accentSoftColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                innerTextField()
+            }
+        },
+    )
 }
 
 @Composable
@@ -1230,18 +1434,23 @@ private fun TimeframeSegment(
 }
 
 @Composable
-private fun TickerSuggestionButton(suggestion: TickerSuggestion, onClick: () -> Unit) {
+private fun TickerSuggestionButton(
+    suggestion: TickerSuggestion,
+    accentColor: Long,
+    onClick: () -> Unit,
+) {
+    val accent = argbColor(accentColor)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xEE252538), RoundedCornerShape(6.dp))
-            .border(1.dp, Color(0xFF45475A), RoundedCornerShape(6.dp))
+            .border(1.dp, accent.copy(alpha = 0.62f), RoundedCornerShape(6.dp))
             .pointerInput(suggestion.symbol) { detectTapGestures { onClick() } }
             .padding(horizontal = 10.dp, vertical = 7.dp),
     ) {
         Text(
             text = suggestion.label,
-            color = Color(0xFFE5E7FF),
+            color = accent,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -1575,6 +1784,10 @@ private fun StockChartCanvas(
     val visibleFirstIndex = remember(candles, liveRangeStart) {
         visibleFirstIndex(candles, liveRangeStart)
     }
+    val currentVisible = rememberUpdatedState(visible)
+    val currentCandles = rememberUpdatedState(candles)
+    val currentVisibleFirstIndex = rememberUpdatedState(visibleFirstIndex)
+    val currentLogScale = rememberUpdatedState(settings.logScale)
     LaunchedEffect(mode, freeMoveZoom, visible) {
         if (mode != ChartMode.None || freeMoveZoom || visible.isEmpty()) {
             candleTooltip = null
@@ -1636,7 +1849,20 @@ private fun StockChartCanvas(
                         } while (event.changes.any { it.pressed })
                     }
                 }
-                .pointerInput(mode, freeMoveZoom, visible, lines, patterns, canvasSize, settings.logScale, forecastLine) {
+                .pointerInput(
+                    mode,
+                    freeMoveZoom,
+                    visible,
+                    candles,
+                    lines,
+                    patterns,
+                    canvasSize,
+                    settings.logScale,
+                    forecastLine,
+                    liveRangeStart,
+                    liveRangeEnd,
+                    visibleFirstIndex,
+                ) {
                     detectTapGestures { tap ->
                         if (freeMoveZoom) return@detectTapGestures
                         if (visible.isEmpty() || canvasSize.width == 0) return@detectTapGestures
@@ -1664,7 +1890,7 @@ private fun StockChartCanvas(
                                 }
                             }
                             ChartMode.DrawLine -> onAnchorPicked(mapper.nearestAnchor(tap))
-                            ChartMode.ConnectLines -> mapper.nearestLine(tap, lines)?.let(onLinePicked)
+                            ChartMode.ConnectLines -> mapper.nearestLine(tap, lines, excludeId = firstConnectLine?.id)?.let(onLinePicked)
                             ChartMode.DeleteLine -> mapper.nearestLine(tap, lines)?.let(onDeleteLinePicked)
                             ChartMode.ForecastLine -> {
                                 val picked = mapper.nearestLine(tap, lines)
@@ -1681,7 +1907,11 @@ private fun StockChartCanvas(
                         }
                     }
                 }
-                .pointerInput(mode, freeMoveZoom, canvasSize) {
+                .pointerInput(
+                    mode,
+                    freeMoveZoom,
+                    canvasSize,
+                ) {
                     var boxStart: Offset? = null
                     var currentBox: BoxSelection? = null
                     var panAccumulatedPx = 0f
@@ -1699,8 +1929,9 @@ private fun StockChartCanvas(
                                 panAccumulatedYPx = 0f
                                 panStartRange = currentRangeStart.value
                                 panEndRange = currentRangeEnd.value
-                                val fallbackLow = visible.minOfOrNull { it.low } ?: 0f
-                                val fallbackHigh = visible.maxOfOrNull { it.high } ?: 1f
+                                val dragVisible = currentVisible.value
+                                val fallbackLow = dragVisible.minOfOrNull { it.low } ?: 0f
+                                val fallbackHigh = dragVisible.maxOfOrNull { it.high } ?: 1f
                                 panStartYLow = currentFreeYLow.value ?: fallbackLow
                                 panStartYHigh = currentFreeYHigh.value ?: fallbackHigh
                                 if (freeYLow == null || freeYHigh == null) {
@@ -1764,18 +1995,28 @@ private fun StockChartCanvas(
                             } else if (mode == ChartMode.BoxSelect) {
                                 currentBox?.let { box ->
                                     onBoxCommitted(box)
-                                    if (visible.isNotEmpty() && canvasSize.width > 0) {
+                                    val dragVisible = currentVisible.value
+                                    val dragCandles = currentCandles.value
+                                    if (dragVisible.isNotEmpty() && canvasSize.width > 0) {
                                         val mapper = ChartMapper(
-                                            visible,
+                                            dragVisible,
                                             canvasSize.width.toFloat(),
                                             canvasSize.height.toFloat(),
-                                            settings.logScale,
+                                            currentLogScale.value,
                                             rangeStartPercent = liveRangeStart,
                                             rangeEndPercent = liveRangeEnd,
-                                            firstVisibleIndex = visibleFirstIndex,
-                                            allCandles = candles,
+                                            firstVisibleIndex = currentVisibleFirstIndex.value,
+                                            allCandles = dragCandles,
                                         )
-                                        onPatternsDetected(detectConvergencePatterns(visible, mapper, box, settings.timeframe))
+                                        onPatternsDetected(
+                                            detectConvergencePatterns(
+                                                dragVisible,
+                                                mapper,
+                                                box,
+                                                settings.timeframe,
+                                                settings.backgroundColor,
+                                            )
+                                        )
                                     }
                                 }
                             } else if (mode == ChartMode.None) {
@@ -2271,16 +2512,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawProjection(
     mapper: ChartMapper,
     settings: AppSettings,
 ) {
-    val color = argbColor(0xFFF9E2AFL)
+    val projectionColor = contrastProjectionColor(settings.backgroundColor)
+    val color = argbColor(projectionColor)
+    val halo = if (relativeLuminance(settings.backgroundColor) > 0.46f) {
+        Color.Black.copy(alpha = 0.34f)
+    } else {
+        Color.White.copy(alpha = 0.72f)
+    }
     val star = Offset(mapper.xForTime(projection.timeMillis), mapper.y(projection.price))
     listOf(projection.first, projection.second).forEach { line ->
         val anchor = line.futureAnchor()
         val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
-        drawLine(color, start, star, strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
+        drawLine(halo, start, star, strokeWidth = settings.lineWidth + 2.2f, cap = StrokeCap.Round)
+        drawLine(color, start, star, strokeWidth = settings.lineWidth + 0.8f, cap = StrokeCap.Round)
     }
     drawStar(star, settings.starSize, color)
     val paint = Paint().apply {
-        this.color = android.graphics.Color.argb(240, 249, 226, 175)
+        this.color = projectionColor.toInt()
         textSize = chartTextPx(settings, 2.0f)
         isAntiAlias = true
     }
@@ -2297,8 +2545,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
     val color = Color(0xFFB4F8C8)
     val anchor = line.futureAnchor()
     val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
-    val forecastX = forecast?.let { mapper.xForTime(it.queryTimeMillis) }
-    val endX = max(max(size.width * 1.35f, start.x + size.width * 0.35f), (forecastX ?: Float.NEGATIVE_INFINITY) + 12f)
+    val endX = mapper.forecastDrawEndX(line, forecast?.queryTimeMillis)
     val endY = mapper.yForVisualLineAtX(line, endX) ?: return
     drawLine(color, start, Offset(endX, endY), strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
 
@@ -2704,6 +2951,7 @@ private fun SettingsDialog(
     onSaveLineWidth: (Float) -> Unit,
     onSavePointSize: (Float) -> Unit,
     onSaveStarSize: (Float) -> Unit,
+    onGuideUpdating: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2734,18 +2982,38 @@ private fun SettingsDialog(
                 ColorRow("축/격자", GRID_SWATCHES, settings.gridColor, onSaveGridColor)
                 ColorRow("글자", TEXT_SWATCHES, settings.textColor, onSaveTextColor)
 
-                Text("폰트", fontWeight = FontWeight.Bold)
-                ChoiceRows(FONT_OPTIONS, columns = 2) { font ->
-                    SmallChoiceButton(font, settings.fontFamily == font) { onSaveFontFamily(font) }
+                Button(
+                    onClick = onGuideUpdating,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF2563EB),
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                ) {
+                    Text("가이드 보기", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
 
                 Text("화면 방향", fontWeight = FontWeight.Bold)
-                OrientationMode.entries.forEach { mode ->
-                    OrientationChoiceButton(
-                        text = mode.label(),
-                        active = mode == settings.orientationMode,
-                        onClick = { onPickOrientation(mode) },
-                    )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFE7E2EA), RoundedCornerShape(12.dp))
+                        .border(1.dp, Color(0xFFD2CAD8), RoundedCornerShape(12.dp))
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    OrientationMode.entries.forEach { mode ->
+                        OrientationChoiceButton(
+                            text = mode.label(),
+                            active = mode == settings.orientationMode,
+                            onClick = { onPickOrientation(mode) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
                 SettingSlider("글자크기", settings.fontSize.coerceAtLeast(12f), 12f..22f, onSaveFontSize)
                 SettingSlider("선 굵기", settings.lineWidth, 1f..8f, onSaveLineWidth)
@@ -2791,25 +3059,27 @@ private fun SmallChoiceButton(text: String, active: Boolean, onClick: () -> Unit
 }
 
 @Composable
-private fun OrientationChoiceButton(text: String, active: Boolean, onClick: () -> Unit) {
+private fun OrientationChoiceButton(
+    text: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Button(
         onClick = onClick,
-        shape = RoundedCornerShape(18.dp),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+        shape = RoundedCornerShape(9.dp),
+        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (active) Color(0xFF2563EB) else Color(0xFF252538),
-            contentColor = if (active) Color.White else Color(0xFFE5E7FF),
+            containerColor = if (active) Color(0xFF2563EB) else Color.Transparent,
+            contentColor = if (active) Color.White else Color(0xFF3B3748),
         ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(36.dp)
-            .border(
-                width = if (active) 2.dp else 1.dp,
-                color = if (active) Color(0xFF93C5FD) else Color(0xFF45475A),
-                shape = RoundedCornerShape(18.dp),
-            ),
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = if (active) 2.dp else 0.dp,
+            pressedElevation = 0.dp,
+        ),
+        modifier = modifier.height(34.dp),
     ) {
-        Text(text, fontSize = 13.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
+        Text(text, fontSize = 12.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -2985,8 +3255,9 @@ private class ChartMapper(
         }
     }
 
-    fun nearestLine(offset: Offset, lines: List<UserLine>): UserLine? {
-        return lines.minByOrNull { line ->
+    fun nearestLine(offset: Offset, lines: List<UserLine>, excludeId: String? = null): UserLine? {
+        val candidates = lines.filterNot { it.id == excludeId }
+        return candidates.minByOrNull { line ->
             pointToSegmentDistance(
                 offset,
                 Offset(xForTime(line.startTimeMillis), y(line.startPrice)),
@@ -3012,10 +3283,10 @@ private class ChartMapper(
                 if (savedTime != null) {
                     val anchor = line.futureAnchor()
                     val anchorPoint = Offset(xForTime(anchor.first), y(anchor.second))
-                    val savedX = max(xForTime(savedTime), anchorPoint.x)
-                    val savedY = yForVisualLineAtX(line, savedX)
-                    if (savedY != null && savedY.isFinite()) {
-                        add(PriceLineCandidate("예측", anchorPoint, Offset(savedX, savedY), 0xFFB4F8C8))
+                    val forecastEndX = forecastDrawEndX(line, savedTime)
+                    val forecastEndY = yForVisualLineAtX(line, forecastEndX)
+                    if (forecastEndY != null && forecastEndY.isFinite()) {
+                        add(PriceLineCandidate("예측", anchorPoint, Offset(forecastEndX, forecastEndY), 0xFFB4F8C8))
                     }
                 }
             }
@@ -3083,6 +3354,16 @@ private class ChartMapper(
         val queryPrice = priceOnVisualLineAtX(line, savedX) ?: line.forecastPrice ?: return null
         if (!queryPrice.isFinite() || queryPrice <= 0f) return null
         return LineForecast(line, queryTime, queryPrice)
+    }
+
+    fun forecastDrawEndX(line: UserLine, forecastTimeMillis: Long?): Float {
+        val anchor = line.futureAnchor()
+        val anchorX = xForTime(anchor.first)
+        val forecastX = forecastTimeMillis?.let { xForTime(it) }
+        return max(
+            max(width * 1.35f, anchorX + width * 0.35f),
+            (forecastX ?: Float.NEGATIVE_INFINITY) + 12f,
+        )
     }
 
     fun yForVisualLineAtX(line: UserLine, xPosition: Float): Float? {
@@ -3175,23 +3456,29 @@ private fun projectPointOnSegment(point: Offset, start: Offset, end: Offset): Of
 }
 
 private fun intersectFutureLines(first: UserLine, second: UserLine): LineProjection? {
-    val x1 = first.startTimeMillis.toDouble()
+    val origin = min(
+        min(first.startTimeMillis, first.endTimeMillis),
+        min(second.startTimeMillis, second.endTimeMillis),
+    )
+    val dayMs = 86_400_000.0
+    val x1 = (first.startTimeMillis - origin) / dayMs
     val y1 = first.startPrice.toDouble()
-    val x2 = first.endTimeMillis.toDouble()
+    val x2 = (first.endTimeMillis - origin) / dayMs
     val y2 = first.endPrice.toDouble()
-    val x3 = second.startTimeMillis.toDouble()
+    val x3 = (second.startTimeMillis - origin) / dayMs
     val y3 = second.startPrice.toDouble()
-    val x4 = second.endTimeMillis.toDouble()
+    val x4 = (second.endTimeMillis - origin) / dayMs
     val y4 = second.endPrice.toDouble()
     val denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
     if (abs(denominator) < 0.000001) return null
     val px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denominator
     val py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denominator
-    val firstFutureStart = max(first.startTimeMillis, first.endTimeMillis).toDouble()
-    val secondFutureStart = max(second.startTimeMillis, second.endTimeMillis).toDouble()
-    if (px <= max(firstFutureStart, secondFutureStart)) return null
+    val firstFutureStart = (max(first.startTimeMillis, first.endTimeMillis) - origin) / dayMs
+    val secondFutureStart = (max(second.startTimeMillis, second.endTimeMillis) - origin) / dayMs
+    if (px <= min(firstFutureStart, secondFutureStart)) return null
     if (!px.isFinite() || !py.isFinite() || py <= 0.0) return null
-    return LineProjection(first, second, px.toLong(), py.toFloat())
+    val projectedTime = origin + (px * dayMs).toLong()
+    return LineProjection(first, second, projectedTime, py.toFloat())
 }
 
 private fun detectConvergencePatterns(
@@ -3199,6 +3486,7 @@ private fun detectConvergencePatterns(
     mapper: ChartMapper,
     box: BoxSelection,
     timeframe: String,
+    backgroundColor: Long,
 ): List<PatternCandidate> {
     val rect = box.rect
     val selected = visible.mapIndexedNotNull { index, candle ->
@@ -3230,6 +3518,7 @@ private fun detectConvergencePatterns(
 
     val candidates = mutableListOf<PatternCandidate>()
     val seen = mutableSetOf<String>()
+    val patternColors = contrastLineColors(backgroundColor)
     val firstTime = selected.first().timeMillis
     val dayMs = 86_400_000.0
     val xDays = selected.map { (it.timeMillis - firstTime) / dayMs }
@@ -3279,7 +3568,7 @@ private fun detectConvergencePatterns(
             if (!price.isFinite() || price <= 0f || price > curPrice * 3f) continue
 
             val label = patternLabel(hs, ls)
-            val color = PATTERN_COLORS[candidates.size % PATTERN_COLORS.size]
+            val color = patternColors[candidates.size % patternColors.size]
             val lineStartX = xDays[tStart]
             candidates += PatternCandidate(
                 label = label,
@@ -3363,18 +3652,44 @@ private data class ThemeOption(
 )
 
 private val THEMES = listOf(
-    ThemeOption("dark", "어둡게", 0xFF1E1E2E, 0xFF313244, 0xFFCDD6F4, 0xFF1E88FF),
-    ThemeOption("light", "밝게", 0xFFF7F7F7, 0xFFD9DDE7, 0xFF1F2937, 0xFF2563EB),
-    ThemeOption("mid", "중간", 0xFFEEF1F5, 0xFFB8C0CC, 0xFF111827, 0xFF3B82F6),
-    ThemeOption("blue", "블루", 0xFF101827, 0xFF26364F, 0xFFDBEAFE, 0xFF38BDF8),
-    ThemeOption("green", "그린", 0xFF152018, 0xFF2F4938, 0xFFDCFCE7, 0xFF22C55E),
+    ThemeOption("midnight", "미드나잇", 0xFF171B2B, 0xFF35405E, 0xFFE8ECFF, 0xFF2E8BFF),
+    ThemeOption("ice", "아이스", 0xFFF5F8FC, 0xFFD4DCE8, 0xFF243044, 0xFF2563EB),
+    ThemeOption("paper", "페이퍼", 0xFFFAF8F1, 0xFFE1D8C7, 0xFF2F2A22, 0xFF374151),
+    ThemeOption("navy", "네이비", 0xFF111D2E, 0xFF2D4362, 0xFFDDEBFF, 0xFF38BDF8),
+    ThemeOption("forest", "포레스트", 0xFF203326, 0xFF4E6B57, 0xFFEAF7E8, 0xFF35D06F),
+    ThemeOption("wine", "와인", 0xFF2D1822, 0xFF684056, 0xFFFFEAF0, 0xFFFB7185),
+    ThemeOption("amber", "앰버", 0xFF302516, 0xFF725633, 0xFFFFF3C7, 0xFFF5A524),
+    ThemeOption("violet", "바이올렛", 0xFF211A35, 0xFF55427E, 0xFFF0E8FF, 0xFFA78BFA),
+    ThemeOption("slate", "슬레이트", 0xFF273241, 0xFF59677A, 0xFFF1F5F9, 0xFF93C5FD),
+    ThemeOption("mint", "민트", 0xFF17302E, 0xFF3E716B, 0xFFE3FFF9, 0xFF2DD4BF),
+    ThemeOption("roseLight", "로즈라이트", 0xFFFFF7F8, 0xFFF0CFD8, 0xFF3B1F2A, 0xFFE11D48),
+    ThemeOption("terminal", "터미널", 0xFF0E1713, 0xFF2F5646, 0xFFD0FBE1, 0xFF4ADE80),
 )
 
-private val CANDLE_SWATCHES = listOf(0xFF1E88FF, 0xFF2563EB, 0xFF3B82F6, 0xFF38BDF8, 0xFF22C55E, 0xFFFFB000, 0xFFEF6C35)
-private val BACKGROUND_SWATCHES = listOf(0xFF1E1E2E, 0xFF171724, 0xFFF7F7F7, 0xFFEEF1F5, 0xFF101827, 0xFF152018)
-private val GRID_SWATCHES = listOf(0xFF313244, 0xFF303244, 0xFFD9DDE7, 0xFFB8C0CC, 0xFF26364F, 0xFF2F4938)
-private val TEXT_SWATCHES = listOf(0xFFCDD6F4, 0xFFE5E7FF, 0xFF1F2937, 0xFF111827, 0xFFDBEAFE, 0xFFDCFCE7)
-private val FONT_OPTIONS = listOf("Arial", "Segoe UI", "Noto Sans KR", "Consolas")
+private val CANDLE_SWATCHES = listOf(
+    0xFF1E88FF, 0xFF2563EB, 0xFF38BDF8, 0xFF06B6D4,
+    0xFF2DD4BF, 0xFF22C55E, 0xFF84CC16, 0xFFF59E0B,
+    0xFFFFB000, 0xFFEF6C35, 0xFFEF4444, 0xFFE11D48,
+    0xFFFB7185, 0xFFA78BFA, 0xFF8B5CF6, 0xFF94A3B8,
+)
+private val BACKGROUND_SWATCHES = listOf(
+    0xFF0E1713, 0xFF111D2E, 0xFF171B2B, 0xFF171724,
+    0xFF273241, 0xFF2D1822, 0xFF302516, 0xFF211A35,
+    0xFF203326, 0xFF17302E, 0xFFF5F8FC, 0xFFFAF8F1,
+    0xFFFFF7F8, 0xFFEEF1F5, 0xFFE9EEF5, 0xFF101827,
+)
+private val GRID_SWATCHES = listOf(
+    0xFF2F5646, 0xFF2D4362, 0xFF35405E, 0xFF303244,
+    0xFF59677A, 0xFF684056, 0xFF725633, 0xFF55427E,
+    0xFF4E6B57, 0xFF3E716B, 0xFFD4DCE8, 0xFFE1D8C7,
+    0xFFF0CFD8, 0xFFB8C0CC, 0xFFC9D4E2, 0xFF26364F,
+)
+private val TEXT_SWATCHES = listOf(
+    0xFFE8ECFF, 0xFFDDEBFF, 0xFFF0E8FF, 0xFFEAF7E8,
+    0xFFE3FFF9, 0xFFFFF3C7, 0xFFFFEAF0, 0xFFD0FBE1,
+    0xFF243044, 0xFF2F2A22, 0xFF3B1F2A, 0xFF111827,
+    0xFF1F2937, 0xFF374151, 0xFF0F172A, 0xFFFFFFFF,
+)
 private val PATTERN_COLORS = listOf(0xFFF9E2AFL, 0xFFF38BA8L, 0xFFCBA6F7L, 0xFF89B4FAL)
 private const val FUTURE_RANGE_START_LIMIT = 300f
 private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -3382,6 +3697,63 @@ private val TOOLTIP_DATE_FORMAT = SimpleDateFormat("yyyy.MM.dd", Locale.US)
 private val AXIS_DATE_FORMAT = SimpleDateFormat("yy-MM-dd", Locale.US)
 
 private fun argbColor(value: Long): Color = Color(value.toInt())
+
+private fun contrastLineColors(backgroundColor: Long): List<Long> {
+    return if (relativeLuminance(backgroundColor) > 0.46f) {
+        listOf(
+            0xFF0F4FE4, // deep blue
+            0xFFB91C1C, // red
+            0xFF047857, // emerald
+            0xFF7C3AED, // violet
+            0xFFB45309, // amber brown
+            0xFF0F766E, // teal
+        )
+    } else {
+        listOf(
+            0xFFF9E2AF, // warm ivory
+            0xFF89B4FA, // sky blue
+            0xFFA6E3A1, // mint green
+            0xFFF38BA8, // rose
+            0xFFCBA6F7, // lavender
+            0xFF94E2D5, // aqua
+        )
+    }
+}
+
+private fun contrastProjectionColor(backgroundColor: Long): Long {
+    return if (relativeLuminance(backgroundColor) > 0.46f) {
+        0xFF7C2D12 // dark burnt orange, visible on bright chart backgrounds
+    } else {
+        0xFFFDE68A // warm gold, visible on dark chart backgrounds
+    }
+}
+
+private fun readableAccentColor(accentColor: Long, backgroundColor: Long): Long {
+    val bg = relativeLuminance(backgroundColor)
+    val accent = relativeLuminance(accentColor)
+    val contrast = (maxOf(bg, accent) + 0.05f) / (minOf(bg, accent) + 0.05f)
+    if (contrast >= 3.2f) return accentColor
+    val target = if (bg > 0.5f) 0xFF111827 else 0xFFFFFFFF
+    return blendArgb(accentColor, target, 0.55f)
+}
+
+private fun blendArgb(from: Long, to: Long, amount: Float): Long {
+    fun channel(color: Long, shift: Int): Int = ((color shr shift) and 0xFF).toInt()
+    fun mix(a: Int, b: Int): Int = (a + (b - a) * amount).roundToInt().coerceIn(0, 255)
+    val a = mix(channel(from, 24), channel(to, 24))
+    val r = mix(channel(from, 16), channel(to, 16))
+    val g = mix(channel(from, 8), channel(to, 8))
+    val b = mix(channel(from, 0), channel(to, 0))
+    return ((a.toLong() shl 24) or (r.toLong() shl 16) or (g.toLong() shl 8) or b.toLong())
+}
+
+private fun relativeLuminance(color: Long): Float {
+    fun channel(shift: Int): Float {
+        val raw = ((color shr shift) and 0xFF).toFloat() / 255f
+        return if (raw <= 0.03928f) raw / 12.92f else ((raw + 0.055f) / 1.055f).pow(2.4f)
+    }
+    return 0.2126f * channel(16) + 0.7152f * channel(8) + 0.0722f * channel(0)
+}
 
 private fun OrientationMode.label(): String = when (this) {
     OrientationMode.System -> "시스템 설정"

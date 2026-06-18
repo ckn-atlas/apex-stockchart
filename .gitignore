@@ -12,3 +12,5 @@ video_frames/
 *.png
 *.log
 crash-log.txt
+release/*.jks
+release/keystore.properties
