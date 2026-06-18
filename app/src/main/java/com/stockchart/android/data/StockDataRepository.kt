@@ -6,6 +6,9 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
+import java.util.Calendar
+import java.util.TimeZone
+import kotlin.math.abs
 
 class StockDataRepository {
     suspend fun searchTickers(query: String): List<TickerSuggestion> = withContext(Dispatchers.IO) {
@@ -65,7 +68,7 @@ class StockDataRepository {
             if (code !in 200..299) {
                 error("Data request failed: HTTP $code $body")
             }
-            parseYahooCandles(body)
+            parseYahooCandles(body, timeframe)
         } finally {
             connection.disconnect()
         }
@@ -96,7 +99,7 @@ private fun parseYahooTickerSuggestions(raw: String): List<TickerSuggestion> {
     }
 }
 
-private fun parseYahooCandles(raw: String): List<Candle> {
+private fun parseYahooCandles(raw: String, timeframe: String): List<Candle> {
     val root = JSONObject(raw)
     val chart = root.getJSONObject("chart")
     val error = chart.opt("error")
@@ -114,7 +117,7 @@ private fun parseYahooCandles(raw: String): List<Candle> {
     val lows = quote.getJSONArray("low")
     val closes = quote.getJSONArray("close")
 
-    return buildList {
+    val parsed = buildList {
         for (index in 0 until timestamps.length()) {
             if (opens.isNull(index) || highs.isNull(index) || lows.isNull(index) || closes.isNull(index)) {
                 continue
@@ -134,4 +137,32 @@ private fun parseYahooCandles(raw: String): List<Candle> {
             )
         }
     }.sortedBy { it.timeMillis }
+
+    return removeDuplicateLiveCandle(parsed, timeframe)
+}
+
+private fun removeDuplicateLiveCandle(candles: List<Candle>, timeframe: String): List<Candle> {
+    if (candles.size < 2 || timeframe == "D") return candles
+
+    val previous = candles[candles.lastIndex - 1]
+    val latest = candles.last()
+    val sameClose = abs(latest.close - previous.close) < 0.0001f
+    val samePeriod = when (timeframe) {
+        "W" -> latest.timeMillis - previous.timeMillis in 0L until 6L * 86_400_000L
+        "M" -> sameUtcMonth(latest.timeMillis, previous.timeMillis)
+        else -> false
+    }
+
+    return if (sameClose && samePeriod) candles.dropLast(1) else candles
+}
+
+private fun sameUtcMonth(firstMillis: Long, secondMillis: Long): Boolean {
+    val first = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+        timeInMillis = firstMillis
+    }
+    val second = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+        timeInMillis = secondMillis
+    }
+    return first.get(Calendar.YEAR) == second.get(Calendar.YEAR) &&
+        first.get(Calendar.MONTH) == second.get(Calendar.MONTH)
 }

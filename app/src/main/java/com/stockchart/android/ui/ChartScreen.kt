@@ -12,23 +12,36 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.LocalTextStyle
@@ -44,15 +57,19 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -89,6 +106,7 @@ private enum class ChartMode {
     ConnectLines,
     DeleteLine,
     ForecastLine,
+    LowHighMeasure,
 }
 
 private data class AnchorPoint(
@@ -116,6 +134,11 @@ private data class LineProjection(
     val price: Float,
 )
 
+private data class MeasureSelection(
+    val start: AnchorPoint,
+    val end: AnchorPoint,
+)
+
 private data class PatternPoint(
     val timeMillis: Long,
     val price: Float,
@@ -131,10 +154,44 @@ private data class PatternCandidate(
     val convergence: PatternPoint,
 )
 
+private data class SavedPattern(
+    val id: String,
+    val ticker: String,
+    val timeframe: String,
+    val pattern: PatternCandidate,
+)
+
+private data class DisplayPattern(
+    val id: String,
+    val pattern: PatternCandidate,
+    val saved: Boolean,
+)
+
 private data class LineForecast(
     val line: UserLine,
     val queryTimeMillis: Long,
     val queryPrice: Float,
+)
+
+private data class LineTooltip(
+    val label: String,
+    val timeMillis: Long,
+    val price: Float,
+    val point: Offset,
+    val color: Long,
+)
+
+private data class PriceLineCandidate(
+    val label: String,
+    val start: Offset,
+    val end: Offset,
+    val color: Long,
+)
+
+private data class CandleTooltip(
+    val index: Int,
+    val candle: Candle,
+    val touch: Offset,
 )
 
 private data class GuideStep(
@@ -183,8 +240,12 @@ fun ChartScreen(
     var projections by remember { mutableStateOf<List<LineProjection>>(emptyList()) }
     var patterns by remember { mutableStateOf<List<PatternCandidate>>(emptyList()) }
     var activePatternIndex by remember { mutableStateOf<Int?>(null) }
+    var savedPatterns by remember { mutableStateOf<List<SavedPattern>>(emptyList()) }
+    var activeSavedPatternId by remember { mutableStateOf<String?>(null) }
     var forecastLine by remember { mutableStateOf<UserLine?>(null) }
     var lineForecast by remember { mutableStateOf<LineForecast?>(null) }
+    var measureStart by remember { mutableStateOf<AnchorPoint?>(null) }
+    var measureSelection by remember { mutableStateOf<MeasureSelection?>(null) }
     var transientMessage by remember { mutableStateOf<String?>(null) }
     var undoStack by remember { mutableStateOf<List<List<UserLine>>>(emptyList()) }
     var redoStack by remember { mutableStateOf<List<List<UserLine>>>(emptyList()) }
@@ -193,7 +254,46 @@ fun ChartScreen(
     var guideStepIndex by remember { mutableStateOf(0) }
     var rangeStart by remember(settings.rangeStartPercent) { mutableStateOf(settings.rangeStartPercent) }
     var rangeEnd by remember(settings.rangeEndPercent) { mutableStateOf(settings.rangeEndPercent) }
-    val visibleLines = lines.filter { it.ticker == settings.ticker && it.timeframe == settings.timeframe }
+    fun UserLine.isCurrentSymbolLine(): Boolean =
+        ticker.equals(settings.ticker, ignoreCase = true)
+
+    fun LineProjection.isCurrentSymbolProjection(): Boolean =
+        first.isCurrentSymbolLine() && second.isCurrentSymbolLine()
+
+    fun SavedPattern.isCurrentSymbolPattern(): Boolean =
+        ticker.equals(settings.ticker, ignoreCase = true)
+
+    val visibleLines = lines.filter { it.isCurrentSymbolLine() }
+    val visibleForecastLines = visibleLines.filter { it.forecastTimeMillis != null }
+    val visibleProjections = projections.filter { it.isCurrentSymbolProjection() }
+    val visibleSavedPatterns = savedPatterns.filter { it.isCurrentSymbolPattern() }
+    val displayPatterns = visibleSavedPatterns.map { DisplayPattern(it.id, it.pattern, saved = true) } +
+        if (committedBox != null) {
+            patterns.mapIndexed { index, pattern -> DisplayPattern("D-$index", pattern, saved = false) }
+        } else {
+            emptyList()
+        }
+    val visiblePatterns = displayPatterns.map { it.pattern }
+    val activePatternIndexForCanvas = when {
+        activeSavedPatternId != null -> displayPatterns.indexOfFirst { it.saved && it.id == activeSavedPatternId }.takeIf { it >= 0 }
+        activePatternIndex != null -> displayPatterns.indexOfFirst { !it.saved && it.id == "D-$activePatternIndex" }.takeIf { it >= 0 }
+        else -> null
+    }
+    val guideMessage = when {
+        chartMode == ChartMode.ConnectLines && firstConnectLine == null -> "수렴하는 두선을 선택해주세요."
+        chartMode == ChartMode.ConnectLines -> "하나 더 선택해주세요."
+        chartMode == ChartMode.LowHighMeasure && measureStart == null && measureSelection == null -> "상승/하락률 첫 번째 점을 선택해주세요."
+        chartMode == ChartMode.LowHighMeasure && measureStart != null -> "두 번째 점을 선택해주세요."
+        else -> transientMessage
+    }
+    val latestCandle = candles.lastOrNull()
+    val previousCandle = if (candles.size >= 2) candles[candles.lastIndex - 1] else null
+    val latestChange = if (latestCandle != null && previousCandle != null) latestCandle.close - previousCandle.close else null
+    val latestChangePercent = if (latestChange != null && previousCandle != null && previousCandle.close != 0f) {
+        latestChange / previousCandle.close * 100f
+    } else {
+        null
+    }
     val guideSteps = remember {
         listOf(
             GuideStep(
@@ -237,11 +337,23 @@ fun ChartScreen(
 
     fun selectMode(next: ChartMode) {
         freeMoveZoom = false
-        chartMode = if (chartMode == next) ChartMode.None else next
+        val wasBoxMode = chartMode == ChartMode.BoxSelect
+        val nextMode = if (chartMode == next) ChartMode.None else next
+        if (wasBoxMode && nextMode != ChartMode.BoxSelect) {
+            activeBox = null
+            committedBox = null
+            patterns = emptyList()
+            activePatternIndex = null
+        }
+        chartMode = nextMode
         pendingAnchor = null
         firstConnectLine = null
         forecastLine = null
         lineForecast = null
+        if (nextMode == ChartMode.LowHighMeasure) {
+            measureStart = null
+            measureSelection = null
+        }
         transientMessage = null
     }
 
@@ -252,9 +364,12 @@ fun ChartScreen(
         firstConnectLine = null
         forecastLine = null
         lineForecast = null
-        projections = emptyList()
+        measureStart = null
+        measureSelection = null
+        projections = projections.filterNot { it.isCurrentSymbolProjection() }
         patterns = emptyList()
         activePatternIndex = null
+        activeSavedPatternId = null
         transientMessage = null
     }
 
@@ -267,12 +382,39 @@ fun ChartScreen(
         }
     }
 
+    LaunchedEffect(settings.ticker, settings.timeframe) {
+        pendingAnchor = null
+        activeBox = null
+        committedBox = null
+        firstConnectLine = null
+        forecastLine = null
+        lineForecast = null
+        measureStart = null
+        patterns = emptyList()
+        activePatternIndex = null
+        activeSavedPatternId = null
+        transientMessage = null
+        chartMode = ChartMode.None
+        freeMoveZoom = false
+    }
+
+    LaunchedEffect(candles, settings.hasSavedRange) {
+        if (!settings.hasSavedRange && candles.isNotEmpty()) {
+            onPickRecentRange(candles, 30) { start, end ->
+                rangeStart = start
+                rangeEnd = end
+                onSaveRange(start, end)
+            }
+        }
+    }
+
     LaunchedEffect(isGuideMode, guideStepIndex) {
         if (!isGuideMode) return@LaunchedEffect
         pendingAnchor = null
         firstConnectLine = null
         forecastLine = null
         lineForecast = null
+        measureStart = null
         transientMessage = null
         chartMode = when (guideStepIndex) {
             2 -> ChartMode.BoxSelect
@@ -282,20 +424,15 @@ fun ChartScreen(
         freeMoveZoom = guideStepIndex == 4
     }
 
-    Surface(
-        modifier = modifier
-            .fillMaxSize()
-            .safeDrawingPadding(),
-        color = argbColor(settings.backgroundColor),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(10.dp),
-        ) {
+    @Composable
+    fun ToolbarPanel(modifier: Modifier = Modifier) {
+        Box(modifier = modifier) {
             TopToolbar(
                 ticker = settings.ticker,
                 timeframe = settings.timeframe,
+                lastPrice = latestCandle?.close,
+                lastChange = latestChange,
+                lastChangePercent = latestChangePercent,
                 mode = chartMode,
                 canConnectLines = visibleLines.size >= 2,
                 onTickerChanged = onSaveTicker,
@@ -308,28 +445,46 @@ fun ChartScreen(
                 onPickMode = ::selectMode,
                 onClearLines = {
                     pendingAnchor = null
-                    clearAnalysisState()
                     undoStack = undoStack + listOf(lines)
                     redoStack = emptyList()
-                    onClearLines()
+                    projections = projections.filterNot { it.isCurrentSymbolProjection() }
+                    activeBox = null
+                    committedBox = null
+                    firstConnectLine = null
+                    forecastLine = null
+                    lineForecast = null
+                    measureStart = null
+                    measureSelection = null
+                    patterns = emptyList()
+                    activePatternIndex = null
+                    activeSavedPatternId = null
+                    transientMessage = null
+                    onReplaceLines(lines.filterNot { it.isCurrentSymbolLine() })
                 },
                 onOpenSettings = { showSettings = true },
             )
+        }
+    }
 
-            Spacer(Modifier.height(8.dp))
-
+    @Composable
+    fun ChartPanel(modifier: Modifier = Modifier) {
             Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = modifier
+                    .shadow(8.dp, RoundedCornerShape(10.dp), clip = false, ambientColor = Color(0x331468FF), spotColor = Color(0x331468FF))
+                    .background(
+                        Brush.verticalGradient(listOf(Color(0xBB101522), Color(0x99101622))),
+                        RoundedCornerShape(10.dp),
+                    )
+                    .border(1.dp, Color(0xFF28314A), RoundedCornerShape(10.dp))
+                    .padding(1.dp),
             ) {
                 StockChartCanvas(
                     candles = candles,
                     settings = settings,
                     lines = visibleLines,
-                    projections = projections,
-                    patterns = patterns,
-                    activePatternIndex = activePatternIndex,
+                    projections = visibleProjections,
+                    patterns = visiblePatterns,
+                    activePatternIndex = activePatternIndexForCanvas,
                     rangeStart = rangeStart,
                     rangeEnd = rangeEnd,
                     mode = chartMode,
@@ -340,6 +495,8 @@ fun ChartScreen(
                     firstConnectLine = firstConnectLine,
                     forecastLine = forecastLine,
                     lineForecast = lineForecast,
+                    measureStart = measureStart,
+                    measureSelection = measureSelection,
                     onAnchorPicked = { anchor ->
                         val first = pendingAnchor
                         if (first == null) {
@@ -385,6 +542,17 @@ fun ChartScreen(
                     onForecastChanged = {
                         lineForecast = it
                     },
+                    onMeasurePointPicked = { anchor ->
+                        val first = measureStart
+                        if (first == null) {
+                            measureStart = anchor
+                            measureSelection = null
+                        } else {
+                            measureSelection = MeasureSelection(first, anchor)
+                            measureStart = null
+                            transientMessage = null
+                        }
+                    },
                     onDeleteLinePicked = { line ->
                         commitLines(lines.filterNot { it.id == line.id })
                         projections = projections.filterNot { it.first.id == line.id || it.second.id == line.id }
@@ -425,11 +593,17 @@ fun ChartScreen(
                         freeMoveZoom = !freeMoveZoom
                         if (!freeMoveZoom) {
                             chartMode = ChartMode.None
-                        } else {
-                            selectMode(ChartMode.None)
-                            freeMoveZoom = true
-                        }
+                            } else {
+                                pendingAnchor = null
+                                firstConnectLine = null
+                                activeBox = null
+                                committedBox = null
+                                transientMessage = null
+                                freeMoveZoom = true
+                            }
                     },
+                    onToggleMeasureMode = { selectMode(ChartMode.LowHighMeasure) },
+                    onPickCandleMode = onSaveCandleMode,
                     modifier = Modifier.fillMaxSize(),
                 )
                 if (chartMode == ChartMode.DrawLine || chartMode == ChartMode.DeleteLine) {
@@ -453,11 +627,88 @@ fun ChartScreen(
                         }
                     }
                 }
-                if (patterns.isNotEmpty()) {
-                    PatternButtons(
-                        patterns = patterns,
-                        activeIndex = activePatternIndex,
-                        onPick = { activePatternIndex = it },
+                if (chartMode == ChartMode.ForecastLine && lineForecast != null) {
+                    ForecastSaveButton(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 84.dp),
+                    ) {
+                        val forecast = lineForecast ?: return@ForecastSaveButton
+                        val updated = forecast.line.copy(
+                            forecastTimeMillis = forecast.queryTimeMillis,
+                            forecastPrice = forecast.queryPrice,
+                        )
+                        undoStack = undoStack + listOf(lines)
+                        redoStack = emptyList()
+                        onReplaceLines(lines.map { if (it.id == updated.id) updated else it })
+                        forecastLine = updated
+                        lineForecast = LineForecast(updated, forecast.queryTimeMillis, forecast.queryPrice)
+                        transientMessage = "가격예측 저장됨"
+                    }
+                }
+                if (patterns.isNotEmpty() || visibleSavedPatterns.isNotEmpty() || visibleForecastLines.isNotEmpty()) {
+                    PatternPanel(
+                        detectedPatterns = if (committedBox != null) patterns else emptyList(),
+                        savedPatterns = visibleSavedPatterns,
+                        savedForecastLines = visibleForecastLines,
+                        activeDetectedIndex = activePatternIndex,
+                        activeSavedId = activeSavedPatternId,
+                        activeForecastId = forecastLine?.id,
+                        onPickDetected = {
+                            activePatternIndex = it
+                            activeSavedPatternId = null
+                            forecastLine = null
+                            lineForecast = null
+                        },
+                        onPickSaved = {
+                            activeSavedPatternId = it
+                            activePatternIndex = null
+                            forecastLine = null
+                            lineForecast = null
+                        },
+                        onPickForecast = {
+                            forecastLine = it
+                            lineForecast = null
+                            activeSavedPatternId = null
+                            activePatternIndex = null
+                        },
+                        onSavePattern = { patternIndex ->
+                            patterns.getOrNull(patternIndex)?.let { pattern ->
+                                val now = System.currentTimeMillis()
+                                savedPatterns = savedPatterns +
+                                    SavedPattern(
+                                        id = "P-${now}-${patternIndex}",
+                                        ticker = settings.ticker,
+                                        timeframe = settings.timeframe,
+                                        pattern = pattern,
+                                    )
+                            }
+                        },
+                        onDeleteSaved = {
+                            activeSavedPatternId?.let { id ->
+                                savedPatterns = savedPatterns.filterNot { it.id == id }
+                                activeSavedPatternId = null
+                            }
+                        },
+                        onDeleteForecast = {
+                            val targetId = forecastLine?.id
+                            if (targetId != null) {
+                                undoStack = undoStack + listOf(lines)
+                                redoStack = emptyList()
+                                onReplaceLines(
+                                    lines.map { line ->
+                                        if (line.id == targetId) {
+                                            line.copy(forecastTimeMillis = null, forecastPrice = null)
+                                        } else {
+                                            line
+                                        }
+                                    }
+                                )
+                                forecastLine = null
+                                lineForecast = null
+                                transientMessage = "예측 삭제됨"
+                            }
+                        },
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(start = 8.dp, top = 44.dp),
@@ -467,7 +718,7 @@ fun ChartScreen(
                     isLoading && candles.isEmpty() -> StatusOverlay("${settings.ticker} 데이터 로딩 중...")
                     dataError != null && candles.isEmpty() -> StatusOverlay(dataError)
                 }
-                transientMessage?.let {
+                guideMessage?.let {
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -480,36 +731,102 @@ fun ChartScreen(
                     }
                 }
             }
+    }
 
-            Spacer(Modifier.height(8.dp))
+    @Composable
+    fun RangeControls(rangeSelectorModifier: Modifier = Modifier.height(118.dp)) {
+        QuickRangeButtons(
+            candles = candles,
+            onPick = { start, end ->
+                freeMoveZoom = false
+                rangeStart = start
+                rangeEnd = end
+                onSaveRange(start, end)
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
 
-            QuickRangeButtons(
-                candles = candles,
-                onPick = { start, end ->
-                    freeMoveZoom = false
-                    rangeStart = start
-                    rangeEnd = end
-                    onSaveRange(start, end)
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
+        Spacer(Modifier.height(4.dp))
 
-            Spacer(Modifier.height(4.dp))
+        RangeSelector(
+            candles = candles,
+            start = rangeStart,
+            end = rangeEnd,
+            onChange = { start, end ->
+                rangeStart = start
+                rangeEnd = end
+            },
+            onChangeFinished = { start, end -> onSaveRange(start, end) },
+            modifier = rangeSelectorModifier.fillMaxWidth(),
+        )
+    }
 
-            RangeSelector(
-                candles = candles,
-                start = rangeStart,
-                end = rangeEnd,
-                onChange = { start, end ->
-                    rangeStart = start
-                    rangeEnd = end
-                },
-                onChangeFinished = { start, end -> onSaveRange(start, end) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(118.dp),
-            )
-        }
+    Surface(
+        modifier = modifier
+            .fillMaxSize()
+            .safeDrawingPadding(),
+        color = argbColor(settings.backgroundColor),
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(10.dp),
+        ) {
+            val landscape = maxWidth > maxHeight
+            if (landscape) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        ToolbarPanel(Modifier.fillMaxWidth())
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(3f)
+                            .fillMaxHeight(),
+                    ) {
+                        ChartPanel(
+                            Modifier
+                                .weight(4f)
+                                .fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                        ) {
+                            RangeControls(
+                                Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            } else {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    ToolbarPanel(Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    ChartPanel(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    RangeControls(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(118.dp),
+                    )
+                }
+            }
 
         if (showSettings) {
             SettingsDialog(
@@ -553,6 +870,7 @@ fun ChartScreen(
                     onExitGuide()
                 },
             )
+        }
         }
     }
 }
@@ -627,6 +945,9 @@ private fun GuideOverlay(
 private fun TopToolbar(
     ticker: String,
     timeframe: String,
+    lastPrice: Float?,
+    lastChange: Float?,
+    lastChangePercent: Float?,
     mode: ChartMode,
     canConnectLines: Boolean,
     onTickerChanged: (String) -> Unit,
@@ -651,7 +972,7 @@ private fun TopToolbar(
 
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -667,26 +988,15 @@ private fun TopToolbar(
                 singleLine = true,
                 textStyle = LocalTextStyle.current.copy(
                     color = Color(0xFFE5E7FF),
-                    fontSize = 14.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                 ),
                 label = { Text("티커") },
-                trailingIcon = {
-                    Text(
-                        text = "검색",
-                        color = Color(0xFF89B4FA),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .pointerInput(tickerField.text) { detectTapGestures { commitTicker() } }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                    )
-                },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { commitTicker() }),
                 modifier = Modifier
                     .weight(1f)
-                    .height(56.dp)
+                    .height(40.dp)
                     .onFocusChanged {
                         if (it.isFocused) {
                             tickerField = tickerField.copy(
@@ -703,10 +1013,12 @@ private fun TopToolbar(
                         }
                     },
             )
-            TimeframeButton("일봉", timeframe == "D") { onPickTimeframe("D") }
-            TimeframeButton("주봉", timeframe == "W") { onPickTimeframe("W") }
-            TimeframeButton("월봉", timeframe == "M") { onPickTimeframe("M") }
-            TimeframeButton("⚙", false, onOpenSettings)
+            GlowActionButton(
+                text = "검색",
+                icon = Icons.Filled.Search,
+                onClick = { commitTicker() },
+                modifier = Modifier.height(40.dp),
+            )
         }
         if (tickerSuggestions.isNotEmpty()) {
             Column(
@@ -728,17 +1040,137 @@ private fun TopToolbar(
                 }
             }
         }
+        StockSummaryRow(
+            ticker = ticker,
+            lastPrice = lastPrice,
+            lastChange = lastChange,
+            lastChangePercent = lastChangePercent,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ToolbarButton("분석영역", mode == ChartMode.BoxSelect, { onPickMode(ChartMode.BoxSelect) }, Modifier.weight(1f))
-            ToolbarButton("선그리기", mode == ChartMode.DrawLine, { onPickMode(ChartMode.DrawLine) }, Modifier.weight(1f))
-            ToolbarButton("선잇기", mode == ChartMode.ConnectLines, { if (canConnectLines) onPickMode(ChartMode.ConnectLines) }, Modifier.weight(1f))
-            ToolbarButton("선삭제", mode == ChartMode.DeleteLine, { onPickMode(ChartMode.DeleteLine) }, Modifier.weight(1f))
-            ToolbarButton("초기화", false, onClearLines, Modifier.weight(1f))
-            ToolbarButton("선가격예측", mode == ChartMode.ForecastLine, { onPickMode(ChartMode.ForecastLine) }, Modifier.weight(1f))
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(32.dp)
+                    .background(Color(0xCC1B1E2C), RoundedCornerShape(8.dp))
+                    .border(1.dp, Color(0xFF252A3D), RoundedCornerShape(8.dp))
+                    .padding(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TimeframeSegment("일봉", timeframe == "D", Modifier.weight(1f)) { onPickTimeframe("D") }
+                TimeframeSegment("주봉", timeframe == "W", Modifier.weight(1f)) { onPickTimeframe("W") }
+                TimeframeSegment("월봉", timeframe == "M", Modifier.weight(1f)) { onPickTimeframe("M") }
+            }
+            ToolIconButton(Icons.Filled.Settings, onOpenSettings)
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                ToolbarButton(Icons.Filled.CropFree, "분석영역", mode == ChartMode.BoxSelect, { onPickMode(ChartMode.BoxSelect) }, Modifier.weight(1f))
+                ToolbarButton(Icons.Filled.Edit, "선그리기", mode == ChartMode.DrawLine, { onPickMode(ChartMode.DrawLine) }, Modifier.weight(1f))
+                ToolbarButton(Icons.Filled.Timeline, "선잇기", mode == ChartMode.ConnectLines, { if (canConnectLines) onPickMode(ChartMode.ConnectLines) }, Modifier.weight(1f))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                ToolbarButton(Icons.Filled.Delete, "선삭제", mode == ChartMode.DeleteLine, { onPickMode(ChartMode.DeleteLine) }, Modifier.weight(1f))
+                ToolbarButton(Icons.Filled.ShowChart, "가격예측", mode == ChartMode.ForecastLine, { onPickMode(ChartMode.ForecastLine) }, Modifier.weight(1f))
+                ToolbarButton(Icons.Filled.Refresh, "초기화", false, onClearLines, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlowActionButton(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .shadow(14.dp, RoundedCornerShape(9.dp), clip = false, ambientColor = Color(0xAA1468FF), spotColor = Color(0xAA1468FF))
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color(0xFF2B7CFF), Color(0xFF0F4FE4)),
+                ),
+                RoundedCornerShape(9.dp),
+            )
+            .border(1.dp, Color(0xFF5FA1FF), RoundedCornerShape(9.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+            Text(text, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+@Composable
+private fun ToolIconButton(icon: ImageVector, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .height(32.dp)
+            .background(Color(0xCC202435), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFF343A52), RoundedCornerShape(8.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = Color(0xFFE5E7FF), modifier = Modifier.size(18.dp))
+    }
+}
+
+@Composable
+private fun StockSummaryRow(
+    ticker: String,
+    lastPrice: Float?,
+    lastChange: Float?,
+    lastChangePercent: Float?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = if (ticker == "GUIDE") "Interactive Walkthrough" else "$ticker  •  US Stock",
+            color = Color(0xFFA9B1D6),
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        lastPrice?.let { price ->
+            Text(
+                text = "$${"%.2f".format(price)}",
+                color = Color(0xFFE5E7FF),
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        if (lastChange != null && lastChangePercent != null) {
+            val positive = lastChange >= 0f
+            Text(
+                text = "${if (positive) "+" else ""}${"%.2f".format(lastChange)} (${if (positive) "+" else ""}${"%.2f".format(lastChangePercent)}%)",
+                color = if (positive) Color(0xFF1E88FF) else Color(0xFFEF5350),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }
@@ -750,9 +1182,50 @@ private fun TimeframeButton(text: String, active: Boolean, onClick: () -> Unit) 
             .background(if (active) Color(0xFF3D4866) else Color(0xFF252538), RoundedCornerShape(6.dp))
             .border(1.dp, if (active) Color(0xFF89B4FA) else Color(0xFF45475A), RoundedCornerShape(6.dp))
             .pointerInput(Unit) { detectTapGestures { onClick() } }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .height(32.dp)
+            .padding(horizontal = 12.dp, vertical = 0.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, color = Color(0xFFE5E7FF), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(text = text, color = Color(0xFFE5E7FF), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun TimeframeSegment(
+    text: String,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .then(
+                if (active) {
+                    Modifier.shadow(
+                        10.dp,
+                        RoundedCornerShape(7.dp),
+                        clip = false,
+                        ambientColor = Color(0x991468FF),
+                        spotColor = Color(0x991468FF),
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .background(
+                if (active) {
+                    Brush.verticalGradient(listOf(Color(0xFF2A74FF), Color(0xFF134ED8)))
+                } else {
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent))
+                },
+                RoundedCornerShape(7.dp),
+            )
+            .border(1.dp, if (active) Color(0xFF67A5FF) else Color.Transparent, RoundedCornerShape(7.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .height(28.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = text, color = Color(0xFFE5E7FF), fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -769,7 +1242,7 @@ private fun TickerSuggestionButton(suggestion: TickerSuggestion, onClick: () -> 
         Text(
             text = suggestion.label,
             color = Color(0xFFE5E7FF),
-            fontSize = 11.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
         )
@@ -778,27 +1251,60 @@ private fun TickerSuggestionButton(suggestion: TickerSuggestion, onClick: () -> 
 
 @Composable
 private fun ToolbarButton(
+    icon: ImageVector,
     text: String,
     active: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Button(
-        onClick = onClick,
-        shape = RoundedCornerShape(6.dp),
-        contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (active) Color(0xFF3D4866) else Color(0xFF252538),
-            contentColor = Color(0xFFE5E7FF),
-        ),
-        modifier = modifier.height(38.dp),
+    Box(
+        modifier = modifier
+            .height(30.dp)
+            .then(
+                if (active) {
+                    Modifier.shadow(
+                        8.dp,
+                        RoundedCornerShape(7.dp),
+                        clip = false,
+                        ambientColor = Color(0x661468FF),
+                        spotColor = Color(0x661468FF),
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .background(
+                if (active) {
+                    Brush.verticalGradient(listOf(Color(0xFF243E78), Color(0xFF172C58)))
+                } else {
+                    Brush.verticalGradient(listOf(Color(0xFF202435), Color(0xFF1B1E2C)))
+                },
+                RoundedCornerShape(7.dp),
+            )
+            .border(1.dp, if (active) Color(0xFF4D85F0) else Color(0xFF2B3044), RoundedCornerShape(7.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text = text, fontSize = 10.sp, maxLines = 1)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (active) Color(0xFF9EC5FF) else Color(0xFF8EA0C8),
+                modifier = Modifier.size(14.dp),
+            )
+            Text(text = text, color = Color(0xFFE5E7FF), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
     }
 }
 
 @Composable
-private fun MiniChartButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+private fun MiniChartButton(
+    text: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -810,9 +1316,27 @@ private fun MiniChartButton(text: String, enabled: Boolean, onClick: () -> Unit)
             disabledContainerColor = Color(0x66252538),
             disabledContentColor = Color(0x88E5E7FF),
         ),
-        modifier = Modifier.height(30.dp),
+        modifier = modifier.height(30.dp),
     ) {
         Text(text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun ForecastSaveButton(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .height(32.dp)
+            .background(Color(0xEE123A43), RoundedCornerShape(6.dp))
+            .border(1.dp, Color(0xFF2DD4BF), RoundedCornerShape(6.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("예측 저장", color = Color(0xFFE6FFFA), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -848,9 +1372,9 @@ private fun QuickRangeButton(text: String, enabled: Boolean, onClick: () -> Unit
             disabledContainerColor = Color(0x55252538),
             disabledContentColor = Color(0x77E5E7FF),
         ),
-        modifier = Modifier.height(26.dp),
+        modifier = Modifier.height(30.dp),
     ) {
-        Text(text, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
     }
 }
 
@@ -878,14 +1402,111 @@ private fun PatternButtons(
         verticalArrangement = Arrangement.spacedBy(5.dp),
         horizontalAlignment = Alignment.Start,
     ) {
-        ToolbarButton("전체", activeIndex == null, { onPick(null) })
+        PatternSelectButton("전체", activeIndex == null, { onPick(null) })
         patterns.forEachIndexed { index, pattern ->
-            ToolbarButton(
+            PatternSelectButton(
                 text = "${index + 1}: ${pattern.label} $${"%.0f".format(pattern.convergence.price)}",
                 active = activeIndex == index,
                 onClick = { onPick(index) },
             )
         }
+    }
+}
+
+@Composable
+private fun PatternSelectButton(
+    text: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .height(32.dp)
+            .background(if (active) Color(0xFF243E78) else Color(0xDD202435), RoundedCornerShape(6.dp))
+            .border(1.dp, if (active) Color(0xFF67A5FF) else Color(0xFF343A52), RoundedCornerShape(6.dp))
+            .pointerInput(Unit) { detectTapGestures { onClick() } }
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color(0xFFE5E7FF), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun PatternPanel(
+    detectedPatterns: List<PatternCandidate>,
+    savedPatterns: List<SavedPattern>,
+    savedForecastLines: List<UserLine>,
+    activeDetectedIndex: Int?,
+    activeSavedId: String?,
+    activeForecastId: String?,
+    onPickDetected: (Int?) -> Unit,
+    onPickSaved: (String) -> Unit,
+    onPickForecast: (UserLine) -> Unit,
+    onSavePattern: (Int) -> Unit,
+    onDeleteSaved: () -> Unit,
+    onDeleteForecast: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        savedPatterns.forEach { saved ->
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                PatternSelectButton(
+                    text = savedPatternLabel(saved.pattern),
+                    active = activeSavedId == saved.id,
+                    onClick = { onPickSaved(saved.id) },
+                )
+                if (activeSavedId == saved.id) {
+                    PatternSelectButton("삭제", false, onDeleteSaved)
+                }
+            }
+        }
+        savedForecastLines.forEach { line ->
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                PatternSelectButton(
+                    text = forecastShortLabel(line),
+                    active = activeForecastId == line.id,
+                    onClick = { onPickForecast(line) },
+                )
+                if (activeForecastId == line.id) {
+                    PatternSelectButton("삭제", false, onDeleteForecast)
+                }
+            }
+        }
+        if (detectedPatterns.isNotEmpty()) {
+            PatternSelectButton("전체", activeSavedId == null && activeForecastId == null && activeDetectedIndex == null, { onPickDetected(null) })
+            detectedPatterns.forEachIndexed { index, pattern ->
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PatternSelectButton(
+                        text = "${index + 1}: ${patternShortLabel(pattern)}",
+                        active = activeSavedId == null && activeDetectedIndex == index,
+                        onClick = { onPickDetected(index) },
+                    )
+                    PatternSelectButton("저장", false) { onSavePattern(index) }
+                }
+            }
+        }
+    }
+}
+
+private fun savedPatternLabel(pattern: PatternCandidate): String = "패턴${patternShortLabel(pattern)}"
+
+private fun forecastShortLabel(line: UserLine): String {
+    val type = if (line.endPrice >= line.startPrice) "지지" else "저항"
+    return "예측[$type]"
+}
+
+private fun patternShortLabel(pattern: PatternCandidate): String {
+    return when {
+        pattern.label.contains("대칭") -> "[대칭]"
+        pattern.label.contains("하락") -> "[하락]"
+        pattern.label.contains("상승") -> "[상승]"
+        pattern.label.contains("채널") -> "[채널]"
+        else -> "[패턴]"
     }
 }
 
@@ -907,10 +1528,13 @@ private fun StockChartCanvas(
     firstConnectLine: UserLine?,
     forecastLine: UserLine?,
     lineForecast: LineForecast?,
+    measureStart: AnchorPoint?,
+    measureSelection: MeasureSelection?,
     onAnchorPicked: (AnchorPoint) -> Unit,
     onLinePicked: (UserLine) -> Unit,
     onForecastLinePicked: (UserLine) -> Unit,
     onForecastChanged: (LineForecast?) -> Unit,
+    onMeasurePointPicked: (AnchorPoint) -> Unit,
     onDeleteLinePicked: (UserLine) -> Unit,
     onBoxChanged: (BoxSelection?) -> Unit,
     onBoxSelectionStarted: () -> Unit,
@@ -920,6 +1544,8 @@ private fun StockChartCanvas(
     onPanFinished: (Float, Float) -> Unit,
     onToggleLogScale: () -> Unit,
     onToggleFreeMoveZoom: () -> Unit,
+    onToggleMeasureMode: () -> Unit,
+    onPickCandleMode: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
@@ -928,6 +1554,9 @@ private fun StockChartCanvas(
     var liveRangeEnd by remember { mutableStateOf(rangeEnd) }
     var freeYLow by remember { mutableStateOf<Float?>(null) }
     var freeYHigh by remember { mutableStateOf<Float?>(null) }
+    var candleTooltip by remember { mutableStateOf<CandleTooltip?>(null) }
+    var lineTooltip by remember { mutableStateOf<LineTooltip?>(null) }
+    var showViewModeMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(rangeStart, rangeEnd, isPanning) {
         if (!isPanning) {
@@ -945,6 +1574,12 @@ private fun StockChartCanvas(
     }
     val visibleFirstIndex = remember(candles, liveRangeStart) {
         visibleFirstIndex(candles, liveRangeStart)
+    }
+    LaunchedEffect(mode, freeMoveZoom, visible) {
+        if (mode != ChartMode.None || freeMoveZoom || visible.isEmpty()) {
+            candleTooltip = null
+            lineTooltip = null
+        }
     }
     LaunchedEffect(freeMoveZoom, visible) {
         if (freeMoveZoom && visible.isNotEmpty() && (freeYLow == null || freeYHigh == null)) {
@@ -981,7 +1616,7 @@ private fun StockChartCanvas(
                                 val xFocusValue = liveRangeStart + xSpan * xFocus
                                 var nextStart = xFocusValue - zoomedXSpan * xFocus
                                 nextStart += -pan.x / canvasSize.width.toFloat() * zoomedXSpan
-                                nextStart = nextStart.coerceIn(0f, 100f)
+                                nextStart = nextStart.coerceIn(0f, FUTURE_RANGE_START_LIMIT)
                                 liveRangeStart = nextStart
                                 liveRangeEnd = nextStart + zoomedXSpan
                                 onPanRange(liveRangeStart, liveRangeEnd)
@@ -1001,7 +1636,7 @@ private fun StockChartCanvas(
                         } while (event.changes.any { it.pressed })
                     }
                 }
-                .pointerInput(mode, freeMoveZoom, visible, lines, canvasSize, settings.logScale, forecastLine) {
+                .pointerInput(mode, freeMoveZoom, visible, lines, patterns, canvasSize, settings.logScale, forecastLine) {
                     detectTapGestures { tap ->
                         if (freeMoveZoom) return@detectTapGestures
                         if (visible.isEmpty() || canvasSize.width == 0) return@detectTapGestures
@@ -1015,9 +1650,19 @@ private fun StockChartCanvas(
                             liveRangeStart,
                             liveRangeEnd,
                             visibleFirstIndex,
-                            candles.size,
+                            candles,
                         )
                         when (mode) {
+                            ChartMode.None -> {
+                                lineTooltip = mapper.nearestLineTooltip(tap, lines, patterns)
+                                candleTooltip = if (lineTooltip == null) {
+                                    mapper.nearestTooltipCandleIndex(tap)?.let { index ->
+                                        CandleTooltip(index, visible[index], tap)
+                                    }
+                                } else {
+                                    null
+                                }
+                            }
                             ChartMode.DrawLine -> onAnchorPicked(mapper.nearestAnchor(tap))
                             ChartMode.ConnectLines -> mapper.nearestLine(tap, lines)?.let(onLinePicked)
                             ChartMode.DeleteLine -> mapper.nearestLine(tap, lines)?.let(onDeleteLinePicked)
@@ -1031,6 +1676,7 @@ private fun StockChartCanvas(
                                     }
                                 }
                             }
+                            ChartMode.LowHighMeasure -> onMeasurePointPicked(mapper.nearestAnchor(tap))
                             else -> Unit
                         }
                     }
@@ -1071,6 +1717,8 @@ private fun StockChartCanvas(
                                 onBoxChanged(currentBox)
                             } else if (mode == ChartMode.None) {
                                 isPanning = true
+                                candleTooltip = null
+                                lineTooltip = null
                                 panAccumulatedPx = 0f
                                 panStartRange = currentRangeStart.value
                                 panEndRange = currentRangeEnd.value
@@ -1084,7 +1732,7 @@ private fun StockChartCanvas(
                                 panAccumulatedYPx += dragAmount.y
                                 val xSpan = (panEndRange - panStartRange).coerceAtLeast(0.5f)
                                 panLiveStart = (panStartRange - panAccumulatedPx / canvasSize.width.toFloat() * xSpan)
-                                    .coerceIn(0f, 100f)
+                                    .coerceIn(0f, FUTURE_RANGE_START_LIMIT)
                                 panLiveEnd = panLiveStart + xSpan
                                 liveRangeStart = panLiveStart
                                 liveRangeEnd = panLiveEnd
@@ -1103,7 +1751,7 @@ private fun StockChartCanvas(
                                 panAccumulatedPx += dragAmount.x
                                 val span = (panEndRange - panStartRange).coerceAtLeast(1f)
                                 val delta = -panAccumulatedPx / canvasSize.width.toFloat() * span
-                                panLiveStart = (panStartRange + delta).coerceIn(0f, 100f)
+                                panLiveStart = (panStartRange + delta).coerceIn(0f, FUTURE_RANGE_START_LIMIT)
                                 panLiveEnd = panLiveStart + span
                                 liveRangeStart = panLiveStart
                                 liveRangeEnd = panLiveEnd
@@ -1125,7 +1773,7 @@ private fun StockChartCanvas(
                                             rangeStartPercent = liveRangeStart,
                                             rangeEndPercent = liveRangeEnd,
                                             firstVisibleIndex = visibleFirstIndex,
-                                            fullCandleCount = candles.size,
+                                            allCandles = candles,
                                         )
                                         onPatternsDetected(detectConvergencePatterns(visible, mapper, box, settings.timeframe))
                                     }
@@ -1160,7 +1808,7 @@ private fun StockChartCanvas(
                 liveRangeStart,
                 liveRangeEnd,
                 visibleFirstIndex,
-                candles.size,
+                candles,
             )
             val gridColor = argbColor(settings.gridColor)
             val candleColor = argbColor(settings.candleColor)
@@ -1183,23 +1831,51 @@ private fun StockChartCanvas(
                 visible.size.toFloat().coerceAtLeast(1f)
             }
             val candleWidth = (size.width / visibleSlotCount * 0.45f).coerceIn(2f, 18f)
-            visible.forEachIndexed { index, candle ->
-                val bodyColor = if (settings.candleMode == "color") {
-                    if (candle.close >= candle.open) upColor else downColor
-                } else {
-                    candleColor
+            if (settings.candleMode == "close") {
+                val closePath = Path()
+                visible.forEachIndexed { index, candle ->
+                    val x = mapper.x(index)
+                    val closeY = mapper.y(candle.close)
+                    if (index == 0) closePath.moveTo(x, closeY) else closePath.lineTo(x, closeY)
+                    drawCircle(Color.White.copy(alpha = 0.72f), radius = 2.2f, center = Offset(x, closeY))
+                    drawCircle(candleColor, radius = 1.5f, center = Offset(x, closeY))
+                    if (candleTooltip?.index == index) {
+                        drawCircle(Color(0xFFF9E2AF), radius = 7f, center = Offset(x, closeY), style = Stroke(width = 2f))
+                    }
                 }
-                val x = mapper.x(index)
-                val highY = mapper.y(candle.high)
-                val lowY = mapper.y(candle.low)
-                val openY = mapper.y(candle.open)
-                val closeY = mapper.y(candle.close)
-                drawLine(bodyColor, Offset(x, highY), Offset(x, lowY), strokeWidth = 1.2f)
-                drawRect(
-                    color = bodyColor,
-                    topLeft = Offset(x - candleWidth / 2f, min(openY, closeY)),
-                    size = Size(candleWidth, max(2f, abs(closeY - openY))),
-                )
+                drawPath(closePath, candleColor, style = Stroke(width = 2.4f, cap = StrokeCap.Round))
+            } else {
+                visible.forEachIndexed { index, candle ->
+                    val selectedCandle = candleTooltip?.index == index
+                    val bodyColor = if (settings.candleMode == "color") {
+                        if (candle.close >= candle.open) upColor else downColor
+                    } else {
+                        candleColor
+                    }
+                    val x = mapper.x(index)
+                    val highY = mapper.y(candle.high)
+                    val lowY = mapper.y(candle.low)
+                    val openY = mapper.y(candle.open)
+                    val closeY = mapper.y(candle.close)
+                    drawLine(bodyColor, Offset(x, highY), Offset(x, lowY), strokeWidth = 1.2f)
+                    val wickPointRadius = (candleWidth * 0.18f).coerceIn(1.1f, 2.2f)
+                    drawCircle(Color.White.copy(alpha = 0.82f), radius = wickPointRadius + 0.7f, center = Offset(x, highY))
+                    drawCircle(Color.White.copy(alpha = 0.82f), radius = wickPointRadius + 0.7f, center = Offset(x, lowY))
+                    drawCircle(bodyColor.copy(alpha = 0.92f), radius = wickPointRadius, center = Offset(x, highY))
+                    drawCircle(bodyColor.copy(alpha = 0.92f), radius = wickPointRadius, center = Offset(x, lowY))
+                    drawRect(
+                        color = bodyColor,
+                        topLeft = Offset(x - candleWidth / 2f, min(openY, closeY)),
+                        size = Size(candleWidth, max(2f, abs(closeY - openY))),
+                    )
+                    if (selectedCandle) {
+                        val highlight = Color(0xFFF9E2AF)
+                        drawCircle(highlight.copy(alpha = 0.28f), radius = wickPointRadius + 7f, center = Offset(x, highY))
+                        drawCircle(highlight.copy(alpha = 0.28f), radius = wickPointRadius + 7f, center = Offset(x, lowY))
+                        drawCircle(highlight, radius = wickPointRadius + 4f, center = Offset(x, highY), style = Stroke(width = 2f))
+                        drawCircle(highlight, radius = wickPointRadius + 4f, center = Offset(x, lowY), style = Stroke(width = 2f))
+                    }
+                }
             }
 
             lines.forEach { line ->
@@ -1228,8 +1904,24 @@ private fun StockChartCanvas(
                 drawProjection(projection, mapper, settings)
             }
 
+            lines.forEach { line ->
+                if (line.id != forecastLine?.id) {
+                    mapper.savedForecast(line)?.let { forecast ->
+                        drawLineForecast(line, forecast, mapper, settings)
+                    }
+                }
+            }
+
             forecastLine?.let { line ->
-                drawLineForecast(line, lineForecast, mapper, settings)
+                drawLineForecast(line, lineForecast ?: mapper.savedForecast(line), mapper, settings)
+            }
+
+            candleTooltip?.let {
+                drawCandleTooltip(it, mapper, settings)
+            }
+
+            lineTooltip?.let {
+                drawLineTooltip(it, settings)
             }
 
             pendingAnchor?.let {
@@ -1241,48 +1933,158 @@ private fun StockChartCanvas(
                 )
             }
 
+            measureSelection?.let { selection ->
+                drawMeasureSelection(selection, mapper, settings)
+            }
+            measureStart?.let { start ->
+                drawCircle(
+                    color = Color(0xFF2DD4BF),
+                    radius = settings.pointSize,
+                    center = Offset(mapper.xForTime(start.timeMillis), mapper.y(start.price)),
+                    style = Stroke(width = 2f),
+                )
+            }
+
             committedBox?.let { drawBoxSelection(it, Color(0x6689B4FA), Color(0x2289B4FA)) }
             activeBox?.let { drawBoxSelection(it, Color(0xFFE5C890), Color(0x22E5C890)) }
 
-            val paint = Paint().apply {
-                color = settings.textColor.toInt()
-                textSize = settings.fontSize * 2.2f
-                isAntiAlias = true
-            }
-            val last = visible.last()
-            drawContext.canvas.nativeCanvas.drawText("$${"%.1f".format(last.close)}", 12f, 30f, paint)
+            drawVisibleRangePrices(visible, settings)
         }
 
-        Button(
+        VisibleRangeSummaryPanel(
+            visible = visible,
+            active = mode == ChartMode.LowHighMeasure,
+            onMeasureClick = onToggleMeasureMode,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 8.dp, bottom = 34.dp),
+        )
+
+        ChartChipButton(
+            text = "LOG",
+            active = settings.logScale,
             onClick = onToggleLogScale,
-            shape = RoundedCornerShape(6.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (settings.logScale) Color(0xFF3D4866) else Color(0xAA252538),
-                contentColor = Color(0xFFE5E7FF),
-            ),
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(8.dp)
-                .height(32.dp),
-        ) {
-            Text("로그스케일", fontSize = 11.sp, maxLines = 1)
-        }
-        Button(
+                .padding(top = 8.dp, end = 8.dp),
+        )
+        ChartChipButton(
+            text = "PAN",
+            active = freeMoveZoom,
             onClick = onToggleFreeMoveZoom,
-            shape = RoundedCornerShape(6.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (freeMoveZoom) Color(0xFF3D4866) else Color(0xAA252538),
-                contentColor = Color(0xFFE5E7FF),
-            ),
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = 46.dp, end = 8.dp)
-                .height(32.dp),
-        ) {
-            Text("자유이동확대", fontSize = 11.sp, maxLines = 1)
+                .padding(top = 42.dp, end = 8.dp),
+        )
+        ChartChipButton(
+            text = "보기",
+            active = showViewModeMenu,
+            onClick = { showViewModeMenu = !showViewModeMenu },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 76.dp, end = 8.dp),
+        )
+        if (showViewModeMenu) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 110.dp, end = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                ChartViewModeButton("현재", settings.candleMode == "mono") {
+                    onPickCandleMode("mono")
+                    showViewModeMenu = false
+                }
+                ChartViewModeButton("전통", settings.candleMode == "color") {
+                    onPickCandleMode("color")
+                    showViewModeMenu = false
+                }
+                ChartViewModeButton("종가선", settings.candleMode == "close") {
+                    onPickCandleMode("close")
+                    showViewModeMenu = false
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun ChartChipButton(
+    text: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (active) Color(0xFF2D3B58) else Color(0x77202534),
+            contentColor = Color(0xFFE5E7FF),
+        ),
+        modifier = modifier.height(28.dp),
+    ) {
+        Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ChartViewModeButton(
+    text: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .height(30.dp)
+            .background(if (active) Color(0xEE2D3B58) else Color(0xDD202534), RoundedCornerShape(7.dp))
+            .border(1.dp, if (active) Color(0xFF89B4FA) else Color(0xFF343A52), RoundedCornerShape(7.dp))
+            .pointerInput(text) { detectTapGestures { onClick() } }
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color(0xFFE5E7FF), fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+@Composable
+private fun VisibleRangeSummaryPanel(
+    visible: List<Candle>,
+    active: Boolean,
+    onMeasureClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (visible.isEmpty()) return
+    val startOpen = visible.first().open
+    val endClose = visible.last().close
+    val percent = if (startOpen != 0f) (endClose - startOpen) / startOpen * 100f else 0f
+    val valueColor = if (percent >= 0f) Color(0xFF22C55E) else Color(0xFFF87171)
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Button(
+            onClick = onMeasureClick,
+            shape = RoundedCornerShape(7.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (active) Color(0xFF2563EB) else Color(0xEE1F2A44),
+                contentColor = Color(0xFFEAF2FF),
+            ),
+            modifier = Modifier.height(28.dp),
+        ) {
+            Text("상승/하락률", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+        Text(
+            text = "시작/종가 : ${"%+.1f".format(percent)}%",
+            color = valueColor,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
     }
 }
 
@@ -1305,6 +2107,116 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBoxSelection(
     )
 }
 
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleRangePrices(
+    visible: List<Candle>,
+    settings: AppSettings,
+) {
+    if (visible.isEmpty()) return
+    val values = listOf(
+        visible.first().open to android.graphics.Color.rgb(229, 231, 255),
+        visible.minOf { it.low } to android.graphics.Color.rgb(96, 165, 250),
+        visible.maxOf { it.high } to android.graphics.Color.rgb(248, 113, 113),
+        visible.last().close to android.graphics.Color.rgb(250, 204, 21),
+    )
+    val paint = Paint().apply {
+        textSize = chartTextPx(settings, 2.35f)
+        isAntiAlias = true
+        textAlign = Paint.Align.LEFT
+    }
+    var x = 12f
+    val y = 36f
+    values.forEach { (price, color) ->
+        val text = "$${"%.1f".format(price)}"
+        paint.color = color
+        drawContext.canvas.nativeCanvas.drawText(text, x, y, paint)
+        x += paint.measureText(text) + 18f
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMeasureSelection(
+    selection: MeasureSelection,
+    mapper: ChartMapper,
+    settings: AppSettings,
+) {
+    val start = Offset(mapper.xForTime(selection.start.timeMillis), mapper.y(selection.start.price))
+    val end = Offset(mapper.xForTime(selection.end.timeMillis), mapper.y(selection.end.price))
+    val pastPoint = if (selection.start.timeMillis <= selection.end.timeMillis) selection.start else selection.end
+    val futurePoint = if (selection.start.timeMillis <= selection.end.timeMillis) selection.end else selection.start
+    val percent = if (pastPoint.price != 0f) {
+        (futurePoint.price - pastPoint.price) / pastPoint.price * 100f
+    } else {
+        0f
+    }
+    val positive = percent >= 0f
+    val color = if (positive) Color(0xFF22C55E) else Color(0xFFF87171)
+    val label = if (positive) "상승율" else "하락율"
+    drawLine(
+        color = color,
+        start = start,
+        end = end,
+        strokeWidth = settings.lineWidth + 0.8f,
+        cap = StrokeCap.Round,
+    )
+    drawCircle(Color.White, radius = settings.pointSize / 2f, center = start)
+    drawCircle(Color.White, radius = settings.pointSize / 2f, center = end)
+    drawCircle(color.copy(alpha = 0.24f), radius = settings.pointSize + 4f, center = end)
+
+    val text = "$label : ${"%+.1f".format(percent)}%"
+    val textSize = chartTextPx(settings, 2.45f)
+    val paint = Paint().apply {
+        this.color = color.toArgb()
+        this.textSize = textSize
+        isAntiAlias = true
+    }
+    val labelMaxX = (size.width - paint.measureText(text) - 10f).coerceAtLeast(10f)
+    val labelMaxY = (size.height - 10f).coerceAtLeast(textSize + 10f)
+    val labelX = (end.x + 10f).coerceIn(10f, labelMaxX)
+    val labelY = (end.y - 10f).coerceIn(textSize + 10f, labelMaxY)
+    drawContext.canvas.nativeCanvas.drawText(text, labelX, labelY, paint)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleRangePercentBox(
+    visible: List<Candle>,
+    settings: AppSettings,
+) {
+    if (visible.isEmpty()) return
+    val startOpen = visible.first().open
+    val endClose = visible.last().close
+    val openClosePercent = if (startOpen != 0f) (endClose - startOpen) / startOpen * 100f else 0f
+    val text = "시작/종가 : ${"%+.1f".format(openClosePercent)}%"
+    val textSize = chartTextPx(settings, 2.15f)
+    val paint = Paint().apply {
+        color = android.graphics.Color.rgb(229, 231, 255)
+        this.textSize = textSize
+        isAntiAlias = true
+        textAlign = Paint.Align.LEFT
+    }
+    val boxWidth = paint.measureText(text) + 30f
+    val boxHeight = textSize + 26f
+    val left = (size.width - boxWidth - 12f).coerceAtLeast(12f)
+    val top = (size.height - boxHeight - 36f).coerceAtLeast(48f)
+    drawRoundRect(
+        color = Color(0xDD111827),
+        topLeft = Offset(left, top),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+    )
+    drawRoundRect(
+        color = Color(0xFF3B82F6),
+        topLeft = Offset(left, top),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+        style = Stroke(width = 1.2f),
+    )
+    paint.color = if (openClosePercent >= 0f) android.graphics.Color.rgb(34, 197, 94) else android.graphics.Color.rgb(248, 113, 113)
+    drawContext.canvas.nativeCanvas.drawText(
+        text,
+        left + 15f,
+        top + textSize + 9f,
+        paint,
+    )
+}
+
 private fun analysisSelection(start: Offset, end: Offset, height: Float): BoxSelection {
     val safeHeight = height.coerceAtLeast(1f)
     return BoxSelection(
@@ -1319,9 +2231,10 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxisLabels(
     settings: AppSettings,
 ) {
     if (visible.isEmpty()) return
+    if (size.width < 96f || size.height < 48f) return
     val paint = Paint().apply {
         color = settings.textColor.toInt()
-        textSize = settings.fontSize * 1.55f
+        textSize = chartTextPx(settings, 1.65f)
         isAntiAlias = true
     }
     repeat(5) { index ->
@@ -1331,17 +2244,22 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxisLabels(
         drawContext.canvas.nativeCanvas.drawText(
             "$${"%.0f".format(price)}",
             size.width - 8f,
-            (y + 18f).coerceIn(18f, size.height - 8f),
+            (y + 18f).coerceIn(18f, (size.height - 8f).coerceAtLeast(18f)),
             paint,
         )
     }
-    repeat(4) { step ->
-        val index = ((visible.lastIndex) * step / 3f).roundToInt().coerceIn(0, visible.lastIndex)
+    val dateLabelIndices = (0..3)
+        .map { step -> ((visible.lastIndex) * step / 3f).roundToInt().coerceIn(0, visible.lastIndex) }
+        .distinct()
+    var lastLabelX = -1000f
+    dateLabelIndices.forEach { index ->
         val x = mapper.x(index)
+        if (x - lastLabelX < 64f) return@forEach
+        lastLabelX = x
         paint.textAlign = Paint.Align.CENTER
         drawContext.canvas.nativeCanvas.drawText(
             AXIS_DATE_FORMAT.format(Date(visible[index].timeMillis)),
-            x.coerceIn(42f, size.width - 42f),
+            x.coerceIn(42f, (size.width - 42f).coerceAtLeast(42f)),
             size.height - 10f,
             paint,
         )
@@ -1356,13 +2274,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawProjection(
     val color = argbColor(0xFFF9E2AFL)
     val star = Offset(mapper.xForTime(projection.timeMillis), mapper.y(projection.price))
     listOf(projection.first, projection.second).forEach { line ->
-        val start = Offset(mapper.xForTime(line.endTimeMillis), mapper.y(line.endPrice))
+        val anchor = line.futureAnchor()
+        val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
         drawLine(color, start, star, strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
     }
     drawStar(star, settings.starSize, color)
     val paint = Paint().apply {
         this.color = android.graphics.Color.argb(240, 249, 226, 175)
-        textSize = 24f
+        textSize = chartTextPx(settings, 2.0f)
         isAntiAlias = true
     }
     drawContext.canvas.nativeCanvas.drawText(DATE_FORMAT.format(Date(projection.timeMillis)), star.x + 12f, star.y - 4f, paint)
@@ -1376,11 +2295,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
     settings: AppSettings,
 ) {
     val color = Color(0xFFB4F8C8)
-    val start = Offset(mapper.xForTime(line.endTimeMillis), mapper.y(line.endPrice))
-    val endTime = mapper.futureTime(1.35f)
-    val endPrice = mapper.priceOnLine(line, endTime) ?: return
-    val end = Offset(mapper.xForTime(endTime), mapper.y(endPrice))
-    drawLine(color, start, end, strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
+    val anchor = line.futureAnchor()
+    val start = Offset(mapper.xForTime(anchor.first), mapper.y(anchor.second))
+    val forecastX = forecast?.let { mapper.xForTime(it.queryTimeMillis) }
+    val endX = max(max(size.width * 1.35f, start.x + size.width * 0.35f), (forecastX ?: Float.NEGATIVE_INFINITY) + 12f)
+    val endY = mapper.yForVisualLineAtX(line, endX) ?: return
+    drawLine(color, start, Offset(endX, endY), strokeWidth = settings.lineWidth, cap = StrokeCap.Round)
 
     forecast?.let {
         val point = Offset(mapper.xForTime(it.queryTimeMillis), mapper.y(it.queryPrice))
@@ -1388,7 +2308,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
         drawLine(Color(0x88B4F8C8), Offset(point.x, 0f), Offset(point.x, size.height), strokeWidth = 1f)
         val paint = Paint().apply {
             this.color = settings.textColor.toInt()
-            textSize = settings.fontSize * 2.0f
+            textSize = chartTextPx(settings, 2.0f)
             isAntiAlias = true
         }
         drawContext.canvas.nativeCanvas.drawText(
@@ -1400,10 +2320,137 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineForecast(
         drawContext.canvas.nativeCanvas.drawText(
             "$${"%.1f".format(it.queryPrice)}",
             point.x + 12f,
-            point.y + settings.fontSize * 2.0f + 2f,
+            point.y + chartTextPx(settings, 2.0f) + 2f,
             paint,
         )
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCandleTooltip(
+    tooltip: CandleTooltip,
+    mapper: ChartMapper,
+    settings: AppSettings,
+) {
+    val candle = tooltip.candle
+    val x = mapper.x(tooltip.index)
+    val highY = mapper.y(candle.high)
+    val lowY = mapper.y(candle.low)
+    val tooltipTextSize = chartTextPx(settings, 1.9f)
+    val lineStep = tooltipTextSize + 7f
+    val boxWidth = 196f
+    val boxHeight = lineStep * 5f + 24f
+    val left = 12f
+    val boxY = 56f.coerceAtMost((size.height - boxHeight - 10f).coerceAtLeast(10f))
+
+    drawLine(
+        color = Color(0x99F9E2AF),
+        start = Offset(x, 0f),
+        end = Offset(x, size.height),
+        strokeWidth = 1.5f,
+    )
+    drawCircle(Color(0xFFF9E2AF), radius = 7f, center = Offset(x, highY), style = Stroke(width = 2f))
+    drawCircle(Color(0xFFF9E2AF), radius = 7f, center = Offset(x, lowY), style = Stroke(width = 2f))
+    drawRoundRect(
+        color = Color(0xEE111827),
+        topLeft = Offset(left, boxY),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+    )
+    drawRoundRect(
+        color = Color(0xFF3B82F6),
+        topLeft = Offset(left, boxY),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+        style = Stroke(width = 1.2f),
+    )
+
+    val labelPaint = Paint().apply {
+        color = android.graphics.Color.argb(235, 229, 231, 255)
+        textSize = tooltipTextSize
+        isAntiAlias = true
+    }
+    val valuePaint = Paint().apply {
+        color = android.graphics.Color.argb(245, 137, 180, 250)
+        textSize = tooltipTextSize
+        isAntiAlias = true
+    }
+    val lines = listOf(
+        TOOLTIP_DATE_FORMAT.format(Date(candle.timeMillis)),
+        "시작  $${"%.2f".format(candle.open)}",
+        "종료  $${"%.2f".format(candle.close)}",
+        "최고  $${"%.2f".format(candle.high)}",
+        "최저  $${"%.2f".format(candle.low)}",
+    )
+    lines.forEachIndexed { index, text ->
+        val paint = if (index == 0) valuePaint else labelPaint
+        drawContext.canvas.nativeCanvas.drawText(
+            text,
+            left + 12f,
+            boxY + tooltipTextSize + 8f + index * lineStep,
+            paint,
+        )
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLineTooltip(
+    tooltip: LineTooltip,
+    settings: AppSettings,
+) {
+    val accent = argbColor(tooltip.color)
+    val point = tooltip.point
+    val textSize = chartTextPx(settings, 1.85f)
+    val boxWidth = 178f
+    val boxHeight = textSize * 2f + 34f
+    val left = (point.x + 12f).coerceIn(10f, (size.width - boxWidth - 10f).coerceAtLeast(10f))
+    val top = (point.y - boxHeight - 12f).coerceIn(10f, (size.height - boxHeight - 10f).coerceAtLeast(10f))
+
+    drawLine(
+        color = accent.copy(alpha = 0.58f),
+        start = Offset(point.x, 0f),
+        end = Offset(point.x, size.height),
+        strokeWidth = 1.1f,
+    )
+    drawCircle(accent.copy(alpha = 0.24f), radius = 11f, center = point)
+    drawCircle(Color.White, radius = 4.5f, center = point)
+    drawRoundRect(
+        color = Color(0xEE111827),
+        topLeft = Offset(left, top),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+    )
+    drawRoundRect(
+        color = accent,
+        topLeft = Offset(left, top),
+        size = Size(boxWidth, boxHeight),
+        cornerRadius = CornerRadius(8f, 8f),
+        style = Stroke(width = 1.2f),
+    )
+    val labelPaint = Paint().apply {
+        color = android.graphics.Color.argb(235, 229, 231, 255)
+        this.textSize = textSize
+        isAntiAlias = true
+    }
+    val valuePaint = Paint().apply {
+        color = tooltip.color.toInt()
+        this.textSize = textSize
+        isAntiAlias = true
+    }
+    drawContext.canvas.nativeCanvas.drawText(
+        "${tooltip.label} ${TOOLTIP_DATE_FORMAT.format(Date(tooltip.timeMillis))}",
+        left + 10f,
+        top + textSize + 8f,
+        labelPaint,
+    )
+    drawContext.canvas.nativeCanvas.drawText(
+        "$${"%.1f".format(tooltip.price)}",
+        left + 10f,
+        top + textSize * 2f + 18f,
+        valuePaint,
+    )
+}
+
+private fun chartTextPx(settings: AppSettings, multiplier: Float): Float {
+    return max(21f, settings.fontSize.coerceAtLeast(13f) * multiplier)
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPattern(
@@ -1444,7 +2491,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPattern(
         drawStar(conv, settings.starSize, Color.White)
         val paint = Paint().apply {
             this.color = settings.textColor.toInt()
-            textSize = settings.fontSize * 2.0f
+            textSize = chartTextPx(settings, 2.0f)
             isAntiAlias = true
         }
         val dateText = DATE_FORMAT.format(Date(pattern.convergence.timeMillis))
@@ -1457,7 +2504,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPattern(
         drawContext.canvas.nativeCanvas.drawText(
             "$${"%.1f".format(pattern.convergence.price)}",
             conv.x + 12f,
-            conv.y + settings.fontSize * 2.0f + 2f,
+            conv.y + chartTextPx(settings, 2.0f) + 2f,
             paint,
         )
     }
@@ -1544,16 +2591,17 @@ private fun RangeSelector(
                         val pointerPercent = (change.position.x - leftPad) / trackWidth * 100f
                         when (dragMode) {
                             DragMode.Start -> {
-                                liveStart = pointerPercent.coerceIn(0f, liveEnd - 1f)
+                                val maxStart = (liveEnd - 1f).coerceAtLeast(0f)
+                                liveStart = pointerPercent.coerceIn(0f, maxStart)
                                 onChange(liveStart, liveEnd)
                             }
                             DragMode.End -> {
-                                liveEnd = pointerPercent.coerceIn(liveStart + 1f, 100f)
+                                liveEnd = pointerPercent.coerceAtLeast(liveStart + 1f)
                                 onChange(liveStart, liveEnd)
                             }
                             DragMode.Window -> {
                                 val span = endAtDrag - startAtDrag
-                                liveStart = (startAtDrag + deltaPercent).coerceIn(0f, 100f - span)
+                                liveStart = (startAtDrag + deltaPercent).coerceAtLeast(0f)
                                 liveEnd = liveStart + span
                                 onChange(liveStart, liveEnd)
                             }
@@ -1609,11 +2657,24 @@ private fun RangeSelector(
 
             drawPath(area, Color(0x5535597E))
             drawPath(line, Color(0xFF1E88FF), style = Stroke(width = 2f))
-            drawRect(
-                color = Color(0x442D3554),
-                topLeft = Offset(startX, chartTop),
-                size = Size((endX - startX).coerceAtLeast(0f), chartHeight),
-            )
+            val visibleLeft = startX.coerceIn(0f, width)
+            val visibleRight = endX.coerceIn(0f, width)
+            if (visibleLeft > 0f) {
+                drawRect(
+                    color = Color(0x99101422),
+                    topLeft = Offset(0f, chartTop),
+                    size = Size(visibleLeft, chartHeight),
+                )
+            }
+            if (visibleRight < width) {
+                drawRect(
+                    color = Color(0x99101422),
+                    topLeft = Offset(visibleRight, chartTop),
+                    size = Size(width - visibleRight, chartHeight),
+                )
+            }
+            drawLine(Color(0xAA89B4FA), Offset(visibleLeft, chartTop), Offset(visibleLeft, chartBottom), strokeWidth = 1.5f)
+            drawLine(Color(0xAA89B4FA), Offset(visibleRight, chartTop), Offset(visibleRight, chartBottom), strokeWidth = 1.5f)
         }
 
         val trackY = height * 0.82f
@@ -1624,18 +2685,6 @@ private fun RangeSelector(
         drawCircle(Color(0xFF9B5DE5), radius = 3.5f, center = Offset(startX, trackY))
         drawCircle(Color(0xFF9B5DE5), radius = 3.5f, center = Offset(endX, trackY))
 
-        val labelPaint = Paint().apply {
-            color = android.graphics.Color.rgb(31, 31, 42)
-            textSize = 24f
-            isAntiAlias = true
-            textAlign = Paint.Align.CENTER
-        }
-        val labelTop = height - 34f
-        val labelSize = Size(58f, 30f)
-        drawRoundRect(Color.White, Offset(0f, labelTop), labelSize, CornerRadius(5f, 5f))
-        drawRoundRect(Color.White, Offset(width - labelSize.width, labelTop), labelSize, CornerRadius(5f, 5f))
-        drawContext.canvas.nativeCanvas.drawText(displayStart.prettyPercent(), labelSize.width / 2f, labelTop + 22f, labelPaint)
-        drawContext.canvas.nativeCanvas.drawText(displayEnd.prettyPercent(), width - labelSize.width / 2f, labelTop + 22f, labelPaint)
     }
 }
 
@@ -1678,6 +2727,7 @@ private fun SettingsDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SmallChoiceButton("단색", settings.candleMode == "mono") { onSaveCandleMode("mono") }
                     SmallChoiceButton("상승/하락", settings.candleMode == "color") { onSaveCandleMode("color") }
+                    SmallChoiceButton("종가선", settings.candleMode == "close") { onSaveCandleMode("close") }
                 }
                 ColorRow("캔들", CANDLE_SWATCHES, settings.candleColor, onSaveCandleColor)
                 ColorRow("배경", BACKGROUND_SWATCHES, settings.backgroundColor, onSaveBackgroundColor)
@@ -1691,14 +2741,13 @@ private fun SettingsDialog(
 
                 Text("화면 방향", fontWeight = FontWeight.Bold)
                 OrientationMode.entries.forEach { mode ->
-                    OutlinedButton(
+                    OrientationChoiceButton(
+                        text = mode.label(),
+                        active = mode == settings.orientationMode,
                         onClick = { onPickOrientation(mode) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(if (mode == settings.orientationMode) "${mode.label()} 선택됨" else mode.label())
-                    }
+                    )
                 }
-                SettingSlider("글자크기", settings.fontSize, 9f..22f, onSaveFontSize)
+                SettingSlider("글자크기", settings.fontSize.coerceAtLeast(12f), 12f..22f, onSaveFontSize)
                 SettingSlider("선 굵기", settings.lineWidth, 1f..8f, onSaveLineWidth)
                 SettingSlider("점 크기", settings.pointSize, 3f..18f, onSavePointSize)
                 SettingSlider("별 크기", settings.starSize, 6f..24f, onSaveStarSize)
@@ -1737,7 +2786,30 @@ private fun SmallChoiceButton(text: String, active: Boolean, onClick: () -> Unit
         ),
         modifier = Modifier.height(32.dp),
     ) {
-        Text(text, fontSize = 11.sp, maxLines = 1)
+        Text(text, fontSize = 13.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun OrientationChoiceButton(text: String, active: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (active) Color(0xFF2563EB) else Color(0xFF252538),
+            contentColor = if (active) Color.White else Color(0xFFE5E7FF),
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .border(
+                width = if (active) 2.dp else 1.dp,
+                color = if (active) Color(0xFF93C5FD) else Color(0xFF45475A),
+                shape = RoundedCornerShape(18.dp),
+            ),
+    ) {
+        Text(text, fontSize = 13.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -1799,8 +2871,9 @@ private class ChartMapper(
     private val rangeStartPercent: Float? = null,
     private val rangeEndPercent: Float? = null,
     private val firstVisibleIndex: Int = 0,
-    private val fullCandleCount: Int = candles.size,
+    private val allCandles: List<Candle> = candles,
 ) {
+    private val fullCandleCount = allCandles.size
     private val low = yLowOverride ?: candles.minOf { it.low }
     private val high = yHighOverride ?: candles.maxOf { it.high }
     private val paddedLow = yLowOverride ?: (low * 0.9f)
@@ -1813,6 +2886,10 @@ private class ChartMapper(
     }
 
     private fun xForLocalIndex(index: Float): Float {
+        return xForGlobalIndex(firstVisibleIndex + index)
+    }
+
+    private fun xForGlobalIndex(globalIndex: Float): Float {
         val startPercent = rangeStartPercent
         val endPercent = rangeEndPercent
         if (startPercent != null && endPercent != null && fullCandleCount > 1) {
@@ -1820,38 +2897,36 @@ private class ChartMapper(
             val startIndex = fullLastIndex * startPercent / 100f
             val endIndex = fullLastIndex * endPercent / 100f
             val span = (endIndex - startIndex).coerceAtLeast(0.0001f)
-            val globalIndex = firstVisibleIndex + index
             return (globalIndex - startIndex) / span * width
         }
         if (candles.size <= 1) return width / 2f
-        return index / (candles.size - 1).toFloat() * width
+        return (globalIndex - firstVisibleIndex) / (candles.size - 1).toFloat() * width
     }
 
     fun xForTime(timeMillis: Long): Float {
-        if (candles.size <= 1) return width / 2f
+        if (allCandles.size <= 1) return width / 2f
 
-        val exactIndex = candles.indexOfFirst { it.timeMillis == timeMillis }
-        if (exactIndex >= 0) return xForLocalIndex(exactIndex.toFloat())
+        val exactIndex = allCandles.indexOfFirst { it.timeMillis == timeMillis }
+        if (exactIndex >= 0) return xForGlobalIndex(exactIndex.toFloat())
 
-        val firstTime = candles.first().timeMillis
-        val lastTime = candles.last().timeMillis
-        val averageStep = ((lastTime - firstTime).toDouble() / (candles.size - 1)).coerceAtLeast(1.0)
-        val index = when {
-            timeMillis < firstTime -> (timeMillis - firstTime) / averageStep
-            timeMillis > lastTime -> candles.lastIndex + (timeMillis - lastTime) / averageStep
+        val firstTime = allCandles.first().timeMillis
+        val lastTime = allCandles.last().timeMillis
+        val globalIndex = when {
+            timeMillis < firstTime -> (timeMillis - firstTime) / leadingTimeStep()
+            timeMillis > lastTime -> allCandles.lastIndex + (timeMillis - lastTime) / trailingTimeStep()
             else -> {
-                val right = candles.indexOfFirst { it.timeMillis > timeMillis }
+                val right = allCandles.indexOfFirst { it.timeMillis > timeMillis }
                 val left = (right - 1).coerceAtLeast(0)
                 if (right <= 0) {
                     0.0
                 } else {
-                    val leftTime = candles[left].timeMillis
-                    val rightTime = candles[right].timeMillis
+                    val leftTime = allCandles[left].timeMillis
+                    val rightTime = allCandles[right].timeMillis
                     left + (timeMillis - leftTime).toDouble() / (rightTime - leftTime).toDouble().coerceAtLeast(1.0)
                 }
             }
         }
-        return xForLocalIndex(index.toFloat())
+        return xForGlobalIndex(globalIndex.toFloat())
     }
 
     fun y(price: Float): Float {
@@ -1866,17 +2941,7 @@ private class ChartMapper(
     }
 
     fun nearestAnchor(offset: Offset): AnchorPoint {
-        val index = if (rangeStartPercent != null && rangeEndPercent != null && fullCandleCount > 1) {
-            val fullLastIndex = (fullCandleCount - 1).toFloat()
-            val startIndex = fullLastIndex * rangeStartPercent / 100f
-            val endIndex = fullLastIndex * rangeEndPercent / 100f
-            val span = (endIndex - startIndex).coerceAtLeast(0.0001f)
-            (startIndex + (offset.x / width) * span - firstVisibleIndex)
-                .roundToInt()
-                .coerceIn(0, candles.lastIndex)
-        } else {
-            ((offset.x / width).coerceIn(0f, 1f) * (candles.size - 1)).roundToInt()
-        }
+        val index = nearestCandleIndex(offset)
         val candle = candles[index]
         val highY = y(candle.high)
         val lowY = y(candle.low)
@@ -1884,6 +2949,39 @@ private class ChartMapper(
             AnchorPoint(candle.timeMillis, candle.high)
         } else {
             AnchorPoint(candle.timeMillis, candle.low)
+        }
+    }
+
+    fun nearestCandleIndex(offset: Offset): Int {
+        return localIndexForOffset(offset.x)
+            .roundToInt()
+            .coerceIn(0, candles.lastIndex)
+    }
+
+    fun nearestTooltipCandleIndex(offset: Offset): Int? {
+        if (candles.isEmpty()) return null
+        val rawIndex = localIndexForOffset(offset.x)
+        val nearest = rawIndex.roundToInt()
+        if (nearest !in candles.indices) return null
+        val nearestX = x(nearest)
+        val slotWidth = if (candles.size > 1) {
+            abs(x(1) - x(0)).coerceAtLeast(1f)
+        } else {
+            width
+        }
+        val hitSlop = min(28f, max(12f, slotWidth * 0.38f))
+        return nearest.takeIf { abs(offset.x - nearestX) <= hitSlop }
+    }
+
+    private fun localIndexForOffset(xPosition: Float): Float {
+        return if (rangeStartPercent != null && rangeEndPercent != null && fullCandleCount > 1) {
+            val fullLastIndex = (fullCandleCount - 1).toFloat()
+            val startIndex = fullLastIndex * rangeStartPercent / 100f
+            val endIndex = fullLastIndex * rangeEndPercent / 100f
+            val span = (endIndex - startIndex).coerceAtLeast(0.0001f)
+            startIndex + (xPosition / width) * span - firstVisibleIndex
+        } else {
+            (xPosition / width).coerceIn(0f, 1f) * (candles.size - 1)
         }
     }
 
@@ -1903,15 +3001,101 @@ private class ChartMapper(
         }
     }
 
+    fun nearestLineTooltip(offset: Offset, lines: List<UserLine>, patterns: List<PatternCandidate>): LineTooltip? {
+        val candidates = buildList {
+            lines.forEach { line ->
+                val start = Offset(xForTime(line.startTimeMillis), y(line.startPrice))
+                val end = Offset(xForTime(line.endTimeMillis), y(line.endPrice))
+                add(PriceLineCandidate("선", start, end, line.color))
+
+                val savedTime = line.forecastTimeMillis
+                if (savedTime != null) {
+                    val anchor = line.futureAnchor()
+                    val anchorPoint = Offset(xForTime(anchor.first), y(anchor.second))
+                    val savedX = max(xForTime(savedTime), anchorPoint.x)
+                    val savedY = yForVisualLineAtX(line, savedX)
+                    if (savedY != null && savedY.isFinite()) {
+                        add(PriceLineCandidate("예측", anchorPoint, Offset(savedX, savedY), 0xFFB4F8C8))
+                    }
+                }
+            }
+            patterns.forEach { pattern ->
+                val label = patternShortLabel(pattern)
+                val color = pattern.color
+                val convergence = Offset(xForTime(pattern.convergence.timeMillis), y(pattern.convergence.price))
+                add(
+                    PriceLineCandidate(
+                        "$label 상단",
+                        Offset(xForTime(pattern.upperA.timeMillis), y(pattern.upperA.price)),
+                        convergence,
+                        color,
+                    )
+                )
+                add(
+                    PriceLineCandidate(
+                        "$label 하단",
+                        Offset(xForTime(pattern.lowerA.timeMillis), y(pattern.lowerA.price)),
+                        convergence,
+                        color,
+                    )
+                )
+            }
+        }
+        val nearest = candidates.mapNotNull { candidate ->
+            val projected = projectPointOnSegment(offset, candidate.start, candidate.end)
+            val distance = hypot(offset.x - projected.x, offset.y - projected.y)
+            if (distance <= 64f) candidate to projected else null
+        }.minByOrNull { (_, projected) ->
+            hypot(offset.x - projected.x, offset.y - projected.y)
+        } ?: return null
+
+        val candidate = nearest.first
+        val point = nearest.second
+        val price = priceForScreenY(point.y)
+        if (!price.isFinite() || price <= 0f) return null
+        return LineTooltip(
+            label = candidate.label,
+            timeMillis = timeForXPosition(point.x),
+            price = price,
+            point = point,
+            color = candidate.color,
+        )
+    }
+
     fun futureTime(widthMultiplier: Float): Long = timeForXPosition(width * widthMultiplier)
+
+    fun timeAtX(xPosition: Float): Long = timeForXPosition(xPosition)
 
     fun forecastAt(line: UserLine, offset: Offset): LineForecast? {
         val lineEndX = xForTime(max(line.startTimeMillis, line.endTimeMillis))
         val queryX = max(offset.x, lineEndX)
         val queryTime = timeForXPosition(queryX)
-        val queryPrice = priceOnLine(line, queryTime) ?: return null
+        val queryPrice = priceOnVisualLineAtX(line, queryX) ?: return null
         if (!queryPrice.isFinite() || queryPrice <= 0f) return null
         return LineForecast(line, queryTime, queryPrice)
+    }
+
+    fun savedForecast(line: UserLine): LineForecast? {
+        val savedTime = line.forecastTimeMillis ?: return null
+        val lineEndX = xForTime(max(line.startTimeMillis, line.endTimeMillis))
+        val savedX = max(xForTime(savedTime), lineEndX)
+        val queryTime = timeForXPosition(savedX)
+        val queryPrice = priceOnVisualLineAtX(line, savedX) ?: line.forecastPrice ?: return null
+        if (!queryPrice.isFinite() || queryPrice <= 0f) return null
+        return LineForecast(line, queryTime, queryPrice)
+    }
+
+    fun yForVisualLineAtX(line: UserLine, xPosition: Float): Float? {
+        val start = Offset(xForTime(line.startTimeMillis), y(line.startPrice))
+        val end = Offset(xForTime(line.endTimeMillis), y(line.endPrice))
+        val dx = end.x - start.x
+        if (abs(dx) < 0.0001f) return null
+        return start.y + (end.y - start.y) * ((xPosition - start.x) / dx)
+    }
+
+    fun priceOnVisualLineAtX(line: UserLine, xPosition: Float): Float? {
+        val yPosition = yForVisualLineAtX(line, xPosition) ?: return null
+        return priceForScreenY(yPosition)
     }
 
     fun priceOnLine(line: UserLine, timeMillis: Long): Float? {
@@ -1923,36 +3107,71 @@ private class ChartMapper(
     }
 
     private fun timeForXPosition(xPosition: Float): Long {
-        if (candles.size <= 1) return candles.firstOrNull()?.timeMillis ?: 0L
-        val index = xPosition / width * (candles.size - 1)
-        val firstTime = candles.first().timeMillis
-        val lastTime = candles.last().timeMillis
-        val averageStep = ((lastTime - firstTime).toDouble() / (candles.size - 1)).coerceAtLeast(1.0)
+        if (allCandles.size <= 1) return allCandles.firstOrNull()?.timeMillis ?: 0L
+        val globalIndex = if (rangeStartPercent != null && rangeEndPercent != null && fullCandleCount > 1) {
+            val fullLastIndex = (fullCandleCount - 1).toFloat()
+            val startIndex = fullLastIndex * rangeStartPercent / 100f
+            val endIndex = fullLastIndex * rangeEndPercent / 100f
+            val span = (endIndex - startIndex).coerceAtLeast(0.0001f)
+            startIndex + (xPosition / width) * span
+        } else {
+            firstVisibleIndex + xPosition / width * (candles.size - 1)
+        }
+        val firstTime = allCandles.first().timeMillis
+        val lastTime = allCandles.last().timeMillis
         return when {
-            index <= 0f -> (firstTime + averageStep * index).toLong()
-            index >= candles.lastIndex -> (lastTime + averageStep * (index - candles.lastIndex)).toLong()
+            globalIndex <= 0f -> (firstTime + leadingTimeStep() * globalIndex).toLong()
+            globalIndex >= allCandles.lastIndex -> (lastTime + trailingTimeStep() * (globalIndex - allCandles.lastIndex)).toLong()
             else -> {
-                val left = index.toInt().coerceIn(0, candles.lastIndex)
-                val right = (left + 1).coerceAtMost(candles.lastIndex)
-                val ratio = (index - left).coerceIn(0f, 1f)
-                (candles[left].timeMillis + (candles[right].timeMillis - candles[left].timeMillis) * ratio).toLong()
+                val left = globalIndex.toInt().coerceIn(0, allCandles.lastIndex)
+                val right = (left + 1).coerceAtMost(allCandles.lastIndex)
+                val ratio = (globalIndex - left).coerceIn(0f, 1f)
+                (allCandles[left].timeMillis + (allCandles[right].timeMillis - allCandles[left].timeMillis) * ratio).toLong()
             }
         }
+    }
+
+    private fun leadingTimeStep(): Double {
+        if (allCandles.size <= 1) return 86_400_000.0
+        return (allCandles[1].timeMillis - allCandles[0].timeMillis).toDouble().coerceAtLeast(1.0)
+    }
+
+    private fun trailingTimeStep(): Double {
+        if (allCandles.size <= 1) return 86_400_000.0
+        return (allCandles.last().timeMillis - allCandles[allCandles.lastIndex - 1].timeMillis).toDouble().coerceAtLeast(1.0)
     }
 
     private fun mapPrice(price: Float): Float {
         val safePrice = price.coerceAtLeast(0.0001f)
         return if (logScale) ln(safePrice) else safePrice
     }
+
+    private fun priceForScreenY(yPosition: Float): Float {
+        val ratio = (height - yPosition) / height
+        val mapped = mappedLow + (mappedHigh - mappedLow) * ratio
+        return if (logScale) exp(mapped).toFloat() else mapped
+    }
+}
+
+private fun UserLine.futureAnchor(): Pair<Long, Float> {
+    return if (startTimeMillis >= endTimeMillis) {
+        startTimeMillis to startPrice
+    } else {
+        endTimeMillis to endPrice
+    }
 }
 
 private fun pointToSegmentDistance(point: Offset, start: Offset, end: Offset): Float {
+    val projection = projectPointOnSegment(point, start, end)
+    return hypot(point.x - projection.x, point.y - projection.y)
+}
+
+private fun projectPointOnSegment(point: Offset, start: Offset, end: Offset): Offset {
     val dx = end.x - start.x
     val dy = end.y - start.y
-    if (dx == 0f && dy == 0f) return hypot(point.x - start.x, point.y - start.y)
+    if (dx == 0f && dy == 0f) return start
     val t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)).coerceIn(0f, 1f)
-    val projection = Offset(start.x + t * dx, start.y + t * dy)
-    return hypot(point.x - projection.x, point.y - projection.y)
+    return Offset(start.x + t * dx, start.y + t * dy)
 }
 
 private fun intersectFutureLines(first: UserLine, second: UserLine): LineProjection? {
@@ -2134,11 +3353,6 @@ private fun overviewCandles(candles: List<Candle>, maxPoints: Int): List<Candle>
 
 private fun Float.roundHalf(): Float = (this * 2f).roundToInt() / 2f
 
-private fun Float.prettyPercent(): String {
-    val rounded = roundHalf()
-    return if (rounded % 1f == 0f) rounded.roundToInt().toString() else rounded.toString()
-}
-
 private data class ThemeOption(
     val id: String,
     val label: String,
@@ -2162,7 +3376,9 @@ private val GRID_SWATCHES = listOf(0xFF313244, 0xFF303244, 0xFFD9DDE7, 0xFFB8C0C
 private val TEXT_SWATCHES = listOf(0xFFCDD6F4, 0xFFE5E7FF, 0xFF1F2937, 0xFF111827, 0xFFDBEAFE, 0xFFDCFCE7)
 private val FONT_OPTIONS = listOf("Arial", "Segoe UI", "Noto Sans KR", "Consolas")
 private val PATTERN_COLORS = listOf(0xFFF9E2AFL, 0xFFF38BA8L, 0xFFCBA6F7L, 0xFF89B4FAL)
+private const val FUTURE_RANGE_START_LIMIT = 300f
 private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+private val TOOLTIP_DATE_FORMAT = SimpleDateFormat("yyyy.MM.dd", Locale.US)
 private val AXIS_DATE_FORMAT = SimpleDateFormat("yy-MM-dd", Locale.US)
 
 private fun argbColor(value: Long): Color = Color(value.toInt())

@@ -53,12 +53,13 @@ class SettingsRepository(private val context: Context) {
             gridColor = prefs[Keys.GridColor] ?: 0xFF303244,
             textColor = prefs[Keys.TextColor] ?: 0xFFE5E7FF,
             fontFamily = prefs[Keys.FontFamily] ?: "Arial",
-            fontSize = prefs[Keys.FontSize] ?: 12f,
+            fontSize = prefs[Keys.FontSize] ?: 13f,
             lineWidth = prefs[Keys.LineWidth] ?: 2.6f,
             pointSize = prefs[Keys.PointSize] ?: 8f,
             starSize = prefs[Keys.StarSize] ?: 10f,
             rangeStartPercent = prefs[Keys.RangeStart] ?: 80f,
             rangeEndPercent = prefs[Keys.RangeEnd] ?: 100f,
+            hasSavedRange = prefs[Keys.RangeStart] != null && prefs[Keys.RangeEnd] != null,
         )
     }
 
@@ -118,7 +119,7 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.GridColor] = obj.optLong("gridColor", 0xFF303244)
             prefs[Keys.TextColor] = obj.optLong("textColor", 0xFFE5E7FF)
             prefs[Keys.FontFamily] = obj.optString("fontFamily", "Arial")
-            prefs[Keys.FontSize] = obj.optDouble("fontSize", 12.0).toFloat()
+            prefs[Keys.FontSize] = obj.optDouble("fontSize", 13.0).toFloat()
             prefs[Keys.LineWidth] = obj.optDouble("lineWidth", 2.6).toFloat()
             prefs[Keys.PointSize] = obj.optDouble("pointSize", 8.0).toFloat()
             prefs[Keys.StarSize] = obj.optDouble("starSize", 10.0).toFloat()
@@ -173,7 +174,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun saveFontSize(value: Float) {
-        context.settingsDataStore.edit { it[Keys.FontSize] = value.coerceIn(9f, 22f) }
+        context.settingsDataStore.edit { it[Keys.FontSize] = value.coerceIn(12f, 22f) }
     }
 
     suspend fun saveLineWidth(value: Float) {
@@ -190,9 +191,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveRange(start: Float, end: Float) {
         context.settingsDataStore.edit {
-            val safeStart = start.coerceIn(0f, 100f)
+            val safeStart = start.coerceIn(0f, 300f)
             it[Keys.RangeStart] = safeStart
-            it[Keys.RangeEnd] = end.coerceAtLeast(safeStart + 1f)
+            it[Keys.RangeEnd] = end.coerceIn(safeStart + 1f, 400f)
         }
     }
 
@@ -215,7 +216,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun deleteLatestLine(ticker: String, timeframe: String) {
         context.settingsDataStore.edit { prefs ->
             val lines = decodeLines(prefs[Keys.LinesJson].orEmpty()).toMutableList()
-            val targetIndex = lines.indexOfLast { it.ticker == ticker && it.timeframe == timeframe }
+            val targetIndex = lines.indexOfLast { it.ticker.equals(ticker, ignoreCase = true) }
             if (targetIndex >= 0) {
                 lines.removeAt(targetIndex)
                 prefs[Keys.LinesJson] = encodeLines(lines)
@@ -260,6 +261,8 @@ fun encodeLines(lines: List<UserLine>): String {
                 .put("endPrice", line.endPrice.toDouble())
                 .put("color", line.color)
                 .put("alertEnabled", line.alertEnabled)
+                .put("forecastTimeMillis", line.forecastTimeMillis ?: JSONObject.NULL)
+                .put("forecastPrice", line.forecastPrice?.toDouble() ?: JSONObject.NULL)
         )
     }
     return array.toString()
@@ -283,6 +286,8 @@ fun decodeLines(raw: String): List<UserLine> {
                         endPrice = obj.getDouble("endPrice").toFloat(),
                         color = obj.optLong("color", 0xFFF9E2AFL),
                         alertEnabled = obj.optBoolean("alertEnabled", true),
+                        forecastTimeMillis = if (obj.isNull("forecastTimeMillis")) null else obj.optLong("forecastTimeMillis"),
+                        forecastPrice = if (obj.isNull("forecastPrice")) null else obj.optDouble("forecastPrice").toFloat(),
                     )
                 )
             }

@@ -33,7 +33,7 @@ class LineAlertWorker(
         val repository = SettingsRepository(applicationContext)
         val settings = repository.settings.first()
         val lines = repository.lines.first()
-            .filter { it.alertEnabled && it.ticker == settings.ticker && it.timeframe == settings.timeframe }
+            .filter { it.alertEnabled && it.ticker.equals(settings.ticker, ignoreCase = true) }
 
         if (lines.isEmpty()) return Result.success()
 

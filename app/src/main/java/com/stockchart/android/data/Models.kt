@@ -39,6 +39,8 @@ data class UserLine(
     val endPrice: Float,
     val color: Long = 0xFFF9E2AFL,
     val alertEnabled: Boolean = true,
+    val forecastTimeMillis: Long? = null,
+    val forecastPrice: Float? = null,
 ) {
     fun priceAt(timeMillis: Long): Float {
         if (startTimeMillis == endTimeMillis) return endPrice
@@ -67,10 +69,11 @@ data class AppSettings(
     val gridColor: Long = 0xFF303244,
     val textColor: Long = 0xFFE5E7FF,
     val fontFamily: String = "Arial",
-    val fontSize: Float = 12f,
+    val fontSize: Float = 13f,
     val lineWidth: Float = 2.6f,
     val pointSize: Float = 8f,
     val starSize: Float = 10f,
     val rangeStartPercent: Float = 80f,
     val rangeEndPercent: Float = 100f,
+    val hasSavedRange: Boolean = false,
 )
