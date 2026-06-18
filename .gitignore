@@ -1,0 +1,14 @@
+.gradle/
+.kotlin/
+.tools/
+local.properties
+**/build/
+*.apk
+*.aab
+*.iml
+.idea/
+work/
+video_frames/
+*.png
+*.log
+crash-log.txt
