@@ -8,7 +8,6 @@ import java.net.URLEncoder
 import java.net.URL
 import java.util.Calendar
 import java.util.TimeZone
-import kotlin.math.abs
 
 class StockDataRepository {
     suspend fun searchTickers(query: String): List<TickerSuggestion> = withContext(Dispatchers.IO) {
@@ -138,22 +137,27 @@ private fun parseYahooCandles(raw: String, timeframe: String): List<Candle> {
         }
     }.sortedBy { it.timeMillis }
 
-    return removeDuplicateLiveCandle(parsed, timeframe)
+    return mergeLiveCandleIntoPeriod(parsed, timeframe)
 }
 
-private fun removeDuplicateLiveCandle(candles: List<Candle>, timeframe: String): List<Candle> {
+private fun mergeLiveCandleIntoPeriod(candles: List<Candle>, timeframe: String): List<Candle> {
     if (candles.size < 2 || timeframe == "D") return candles
 
     val previous = candles[candles.lastIndex - 1]
     val latest = candles.last()
-    val sameClose = abs(latest.close - previous.close) < 0.0001f
     val samePeriod = when (timeframe) {
         "W" -> latest.timeMillis - previous.timeMillis in 0L until 6L * 86_400_000L
         "M" -> sameUtcMonth(latest.timeMillis, previous.timeMillis)
         else -> false
     }
 
-    return if (sameClose && samePeriod) candles.dropLast(1) else candles
+    if (!samePeriod) return candles
+
+    return candles.dropLast(2) + previous.copy(
+        high = maxOf(previous.high, latest.high),
+        low = minOf(previous.low, latest.low),
+        close = latest.close,
+    )
 }
 
 private fun sameUtcMonth(firstMillis: Long, secondMillis: Long): Boolean {

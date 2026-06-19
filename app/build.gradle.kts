@@ -20,8 +20,8 @@ android {
         applicationId = "com.apex.stockchart"
         minSdk = 26
         targetSdk = 36
-        versionCode = 124
-        versionName = "1.2.4"
+        versionCode = 125
+        versionName = "1.2.5"
     }
 
     signingConfigs {

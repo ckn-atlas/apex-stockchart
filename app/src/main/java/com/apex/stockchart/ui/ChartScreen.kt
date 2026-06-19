@@ -209,7 +209,6 @@ fun ChartScreen(
     isLoading: Boolean,
     dataError: String?,
     tickerSuggestions: List<TickerSuggestion>,
-    isGuideMode: Boolean,
     lines: List<UserLine>,
     onTickerSearchTextChanged: (String) -> Unit,
     onSaveLine: (UserLine) -> Unit,
@@ -231,7 +230,6 @@ fun ChartScreen(
     onSavePointSize: (Float) -> Unit,
     onSaveStarSize: (Float) -> Unit,
     onSaveRange: (Float, Float) -> Unit,
-    onExitGuide: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var chartMode by remember { mutableStateOf(ChartMode.None) }
@@ -253,7 +251,6 @@ fun ChartScreen(
     var redoStack by remember { mutableStateOf<List<List<UserLine>>>(emptyList()) }
     var showSettings by remember { mutableStateOf(false) }
     var freeMoveZoom by remember { mutableStateOf(false) }
-    var guideStepIndex by remember { mutableStateOf(0) }
     var rangeStart by remember(settings.rangeStartPercent) { mutableStateOf(settings.rangeStartPercent) }
     var rangeEnd by remember(settings.rangeEndPercent) { mutableStateOf(settings.rangeEndPercent) }
     fun UserLine.isCurrentSymbolLine(): Boolean =
@@ -296,41 +293,6 @@ fun ChartScreen(
     } else {
         null
     }
-    val guideSteps = remember {
-        listOf(
-            GuideStep(
-                "Ticker Search",
-                "Type a symbol or company name. Choose GUIDE any time to replay this walkthrough.",
-                "↑",
-            ),
-            GuideStep(
-                "Timeframes",
-                "Switch daily, weekly, or monthly while keeping the chart range you are working in.",
-                "↑",
-            ),
-            GuideStep(
-                "Analysis Area",
-                "Drag across the chart to scan that time window for converging triangle and wedge patterns.",
-                "↗",
-            ),
-            GuideStep(
-                "Drawing Tools",
-                "Draw trend lines, connect two lines for an intersection, delete selected lines, or forecast price.",
-                "↑",
-            ),
-            GuideStep(
-                "Free Move + Zoom",
-                "Use one finger to pan. Pinch with two fingers to zoom. Future space stays open for projections.",
-                "→",
-            ),
-            GuideStep(
-                "Range Slider",
-                "Use quick range buttons or the lower slider to control exactly which section is visible.",
-                "↓",
-            ),
-        )
-    }
-
     fun commitLines(nextLines: List<UserLine>) {
         undoStack = undoStack + listOf(lines)
         redoStack = emptyList()
@@ -350,7 +312,11 @@ fun ChartScreen(
         chartMode = nextMode
         pendingAnchor = null
         firstConnectLine = null
-        forecastLine = null
+        forecastLine = if (nextMode == ChartMode.ForecastLine && visibleLines.size == 1) {
+            visibleLines.first()
+        } else {
+            null
+        }
         lineForecast = null
         if (nextMode == ChartMode.LowHighMeasure) {
             measureStart = null
@@ -373,15 +339,6 @@ fun ChartScreen(
         activePatternIndex = null
         activeSavedPatternId = null
         transientMessage = null
-    }
-
-    LaunchedEffect(isGuideMode) {
-        if (isGuideMode) {
-            guideStepIndex = 0
-            clearAnalysisState()
-            chartMode = ChartMode.None
-            freeMoveZoom = false
-        }
     }
 
     LaunchedEffect(settings.ticker, settings.timeframe) {
@@ -408,22 +365,6 @@ fun ChartScreen(
                 onSaveRange(start, end)
             }
         }
-    }
-
-    LaunchedEffect(isGuideMode, guideStepIndex) {
-        if (!isGuideMode) return@LaunchedEffect
-        pendingAnchor = null
-        firstConnectLine = null
-        forecastLine = null
-        lineForecast = null
-        measureStart = null
-        transientMessage = null
-        chartMode = when (guideStepIndex) {
-            2 -> ChartMode.BoxSelect
-            3 -> ChartMode.DrawLine
-            else -> ChartMode.None
-        }
-        freeMoveZoom = guideStepIndex == 4
     }
 
     @Composable
@@ -502,20 +443,17 @@ fun ChartScreen(
                         if (first == null) {
                             pendingAnchor = anchor
                         } else {
-                            undoStack = undoStack + listOf(lines)
-                            redoStack = emptyList()
-                            onSaveLine(
-                                UserLine(
-                                    id = "L-${System.currentTimeMillis()}",
-                                    ticker = settings.ticker,
-                                    timeframe = settings.timeframe,
-                                    startTimeMillis = first.timeMillis,
-                                    startPrice = first.price,
-                                    endTimeMillis = anchor.timeMillis,
-                                    endPrice = anchor.price,
-                                    color = contrastLineColors(settings.backgroundColor)[visibleLines.size % contrastLineColors(settings.backgroundColor).size],
-                                ),
+                            val newLine = UserLine(
+                                id = "L-${System.currentTimeMillis()}",
+                                ticker = settings.ticker,
+                                timeframe = settings.timeframe,
+                                startTimeMillis = first.timeMillis,
+                                startPrice = first.price,
+                                endTimeMillis = anchor.timeMillis,
+                                endPrice = anchor.price,
+                                color = contrastLineColors(settings.backgroundColor)[visibleLines.size % contrastLineColors(settings.backgroundColor).size],
                             )
+                            commitLines(lines.filterNot { it.id == newLine.id } + newLine)
                             pendingAnchor = null
                         }
                     },
@@ -845,35 +783,6 @@ fun ChartScreen(
                 onSaveLineWidth = onSaveLineWidth,
                 onSavePointSize = onSavePointSize,
                 onSaveStarSize = onSaveStarSize,
-                onGuideUpdating = {
-                    showSettings = false
-                    transientMessage = "가이드는 업데이트 중입니다."
-                },
-            )
-        }
-
-        if (isGuideMode) {
-            GuideOverlay(
-                step = guideSteps[guideStepIndex.coerceIn(0, guideSteps.lastIndex)],
-                index = guideStepIndex,
-                total = guideSteps.size,
-                onPrevious = { guideStepIndex = (guideStepIndex - 1).coerceAtLeast(0) },
-                onNext = {
-                    if (guideStepIndex >= guideSteps.lastIndex) {
-                        clearAnalysisState()
-                        chartMode = ChartMode.None
-                        freeMoveZoom = false
-                        onExitGuide()
-                    } else {
-                        guideStepIndex += 1
-                    }
-                },
-                onFinish = {
-                    clearAnalysisState()
-                    chartMode = ChartMode.None
-                    freeMoveZoom = false
-                    onExitGuide()
-                },
             )
         }
         }
@@ -1249,7 +1158,7 @@ private fun StockSummaryRow(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                text = if (ticker == "GUIDE") "Interactive Walkthrough" else "$ticker  •  US Stock",
+                text = "$ticker  •  US Stock",
                 color = accentSoft,
                 fontSize = 12.sp,
                 modifier = Modifier.fillMaxWidth(),
@@ -1289,7 +1198,7 @@ private fun StockSummaryRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = if (ticker == "GUIDE") "Interactive Walkthrough" else "$ticker  •  US Stock",
+            text = "$ticker  •  US Stock",
             color = accentSoft,
             fontSize = 13.sp,
             modifier = Modifier.weight(1f),
@@ -3067,7 +2976,6 @@ private fun SettingsDialog(
     onSaveLineWidth: (Float) -> Unit,
     onSavePointSize: (Float) -> Unit,
     onSaveStarSize: (Float) -> Unit,
-    onGuideUpdating: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -3097,21 +3005,6 @@ private fun SettingsDialog(
                 ColorRow("배경", BACKGROUND_SWATCHES, settings.backgroundColor, onSaveBackgroundColor)
                 ColorRow("축/격자", GRID_SWATCHES, settings.gridColor, onSaveGridColor)
                 ColorRow("글자", TEXT_SWATCHES, settings.textColor, onSaveTextColor)
-
-                Button(
-                    onClick = onGuideUpdating,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF2563EB),
-                        contentColor = Color.White,
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                ) {
-                    Text("가이드 보기", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
 
                 Text("화면 방향", fontWeight = FontWeight.Bold)
                 Row(

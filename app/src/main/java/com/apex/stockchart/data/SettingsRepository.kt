@@ -42,7 +42,7 @@ class SettingsRepository(private val context: Context) {
         AppSettings(
             orientationMode = prefs[Keys.Orientation]?.let { runCatching { OrientationMode.valueOf(it) }.getOrNull() }
                 ?: OrientationMode.System,
-            ticker = prefs[Keys.Ticker] ?: "GUIDE",
+            ticker = prefs[Keys.Ticker] ?: "TSLA",
             guideReturnTicker = prefs[Keys.GuideReturnTicker],
             timeframe = prefs[Keys.Timeframe] ?: "D",
             logScale = prefs[Keys.LogScale] ?: false,
