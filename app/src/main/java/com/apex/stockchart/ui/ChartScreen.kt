@@ -1788,8 +1788,8 @@ private fun StockChartCanvas(
     val currentCandles = rememberUpdatedState(candles)
     val currentVisibleFirstIndex = rememberUpdatedState(visibleFirstIndex)
     val currentLogScale = rememberUpdatedState(settings.logScale)
-    LaunchedEffect(mode, freeMoveZoom, visible) {
-        if (mode != ChartMode.None || freeMoveZoom || visible.isEmpty()) {
+    LaunchedEffect(mode, visible) {
+        if (mode != ChartMode.None || visible.isEmpty()) {
             candleTooltip = null
             lineTooltip = null
         }
@@ -1896,7 +1896,6 @@ private fun StockChartCanvas(
                     visibleFirstIndex,
                 ) {
                     detectTapGestures { tap ->
-                        if (freeMoveZoom) return@detectTapGestures
                         if (visible.isEmpty() || canvasSize.width == 0) return@detectTapGestures
                         val mapper = ChartMapper(
                             visible,
@@ -1913,7 +1912,7 @@ private fun StockChartCanvas(
                         when (mode) {
                             ChartMode.None -> {
                                 lineTooltip = mapper.nearestLineTooltip(tap, lines, patterns)
-                                candleTooltip = if (lineTooltip == null) {
+                                candleTooltip = if (!freeMoveZoom && lineTooltip == null) {
                                     mapper.nearestTooltipCandleIndex(tap)?.let { index ->
                                         CandleTooltip(index, visible[index], tap)
                                     }
