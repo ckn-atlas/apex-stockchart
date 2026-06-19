@@ -51,12 +51,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -251,6 +253,7 @@ fun ChartScreen(
     var redoStack by remember { mutableStateOf<List<List<UserLine>>>(emptyList()) }
     var showSettings by remember { mutableStateOf(false) }
     var freeMoveZoom by remember { mutableStateOf(false) }
+    var suppressedForecastLineIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var rangeStart by remember(settings.rangeStartPercent) { mutableStateOf(settings.rangeStartPercent) }
     var rangeEnd by remember(settings.rangeEndPercent) { mutableStateOf(settings.rangeEndPercent) }
     fun UserLine.isCurrentSymbolLine(): Boolean =
@@ -262,7 +265,15 @@ fun ChartScreen(
     fun SavedPattern.isCurrentSymbolPattern(): Boolean =
         ticker.equals(settings.ticker, ignoreCase = true)
 
-    val visibleLines = lines.filter { it.isCurrentSymbolLine() }
+    val visibleLines = lines
+        .filter { it.isCurrentSymbolLine() }
+        .map { line ->
+            if (line.id in suppressedForecastLineIds) {
+                line.copy(forecastTimeMillis = null, forecastPrice = null)
+            } else {
+                line
+            }
+        }
     val visibleForecastLines = visibleLines.filter { it.forecastTimeMillis != null }
     val visibleProjections = projections.filter { it.isCurrentSymbolProjection() }
     val visibleSavedPatterns = savedPatterns.filter { it.isCurrentSymbolPattern() }
@@ -297,6 +308,14 @@ fun ChartScreen(
         undoStack = undoStack + listOf(lines)
         redoStack = emptyList()
         onReplaceLines(nextLines)
+    }
+
+    LaunchedEffect(lines) {
+        suppressedForecastLineIds = suppressedForecastLineIds.filter { id ->
+            lines.any { line ->
+                line.id == id && (line.forecastTimeMillis != null || line.forecastPrice != null)
+            }
+        }.toSet()
     }
 
     fun selectMode(next: ChartMode) {
@@ -403,9 +422,13 @@ fun ChartScreen(
                     measureStart = null
                     measureSelection = null
                     patterns = emptyList()
+                    savedPatterns = savedPatterns.filterNot { it.isCurrentSymbolPattern() }
                     activePatternIndex = null
                     activeSavedPatternId = null
                     transientMessage = null
+                    suppressedForecastLineIds = suppressedForecastLineIds + lines
+                        .filter { it.isCurrentSymbolLine() && (it.forecastTimeMillis != null || it.forecastPrice != null) }
+                        .map { it.id }
                     onReplaceLines(lines.filterNot { it.isCurrentSymbolLine() })
                 },
                 onOpenSettings = { showSettings = true },
@@ -579,6 +602,7 @@ fun ChartScreen(
                         )
                         undoStack = undoStack + listOf(lines)
                         redoStack = emptyList()
+                        suppressedForecastLineIds = suppressedForecastLineIds - updated.id
                         onReplaceLines(lines.map { if (it.id == updated.id) updated else it })
                         forecastLine = updated
                         lineForecast = LineForecast(updated, forecast.queryTimeMillis, forecast.queryPrice)
@@ -623,9 +647,9 @@ fun ChartScreen(
                                     )
                             }
                         },
-                        onDeleteSaved = {
-                            activeSavedPatternId?.let { id ->
-                                savedPatterns = savedPatterns.filterNot { it.id == id }
+                        onDeleteSaved = { id ->
+                            savedPatterns = savedPatterns.filterNot { it.id == id }
+                            if (activeSavedPatternId == id) {
                                 activeSavedPatternId = null
                             }
                         },
@@ -634,6 +658,7 @@ fun ChartScreen(
                             if (targetId != null) {
                                 undoStack = undoStack + listOf(lines)
                                 redoStack = emptyList()
+                                suppressedForecastLineIds = suppressedForecastLineIds + targetId
                                 onReplaceLines(
                                     lines.map { line ->
                                         if (line.id == targetId) {
@@ -1172,7 +1197,7 @@ private fun StockSummaryRow(
                 lastPrice?.let { price ->
                     Text(
                         text = "$${"%.2f".format(price)}",
-                        color = Color(0xFFE5E7FF),
+                        color = accent,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
                     )
@@ -1207,7 +1232,7 @@ private fun StockSummaryRow(
         lastPrice?.let { price ->
             Text(
                 text = "$${"%.2f".format(price)}",
-                color = Color(0xFFE5E7FF),
+                color = accent,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             )
@@ -1562,7 +1587,7 @@ private fun PatternPanel(
     onPickSaved: (String) -> Unit,
     onPickForecast: (UserLine) -> Unit,
     onSavePattern: (Int) -> Unit,
-    onDeleteSaved: () -> Unit,
+    onDeleteSaved: (String) -> Unit,
     onDeleteForecast: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1572,26 +1597,30 @@ private fun PatternPanel(
         horizontalAlignment = Alignment.Start,
     ) {
         savedPatterns.forEach { saved ->
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-                PatternSelectButton(
-                    text = savedPatternLabel(saved.pattern),
-                    active = activeSavedId == saved.id,
-                    onClick = { onPickSaved(saved.id) },
-                )
-                if (activeSavedId == saved.id) {
-                    PatternSelectButton("삭제", false, onDeleteSaved)
+            key(saved.id) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PatternSelectButton(
+                        text = savedPatternLabel(saved.pattern),
+                        active = activeSavedId == saved.id,
+                        onClick = { onPickSaved(saved.id) },
+                    )
+                    if (activeSavedId == saved.id) {
+                        PatternSelectButton("삭제", false) { onDeleteSaved(saved.id) }
+                    }
                 }
             }
         }
         savedForecastLines.forEach { line ->
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
-                PatternSelectButton(
-                    text = forecastShortLabel(line),
-                    active = activeForecastId == line.id,
-                    onClick = { onPickForecast(line) },
-                )
-                if (activeForecastId == line.id) {
-                    PatternSelectButton("삭제", false, onDeleteForecast)
+            key(line.id) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    PatternSelectButton(
+                        text = forecastShortLabel(line),
+                        active = activeForecastId == line.id,
+                        onClick = { onPickForecast(line) },
+                    )
+                    if (activeForecastId == line.id) {
+                        PatternSelectButton("삭제", false, onDeleteForecast)
+                    }
                 }
             }
         }
@@ -1717,10 +1746,15 @@ private fun StockChartCanvas(
         }
     }
 
-    Box(modifier = modifier.background(argbColor(settings.backgroundColor))) {
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .background(argbColor(settings.backgroundColor)),
+    ) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .clipToBounds()
                 .onSizeChanged { canvasSize = it }
                 .pointerInput(freeMoveZoom, canvasSize) {
                     if (!freeMoveZoom) return@pointerInput
@@ -2611,8 +2645,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCandleTooltip(
     val lineStep = tooltipTextSize + 7f
     val boxWidth = 196f
     val boxHeight = lineStep * 5f + 24f
-    val left = 12f
-    val boxY = 56f.coerceAtMost((size.height - boxHeight - 10f).coerceAtLeast(10f))
+    val left = (size.width - boxWidth - 14f).coerceAtLeast(10f)
+    val boxY = 112f.coerceAtMost((size.height - boxHeight - 10f).coerceAtLeast(10f))
 
     drawLine(
         color = Color(0x99F9E2AF),

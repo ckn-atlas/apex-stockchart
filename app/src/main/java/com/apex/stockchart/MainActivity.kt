@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
                 isLoading = true
                 dataError = null
                 if (settings.ticker.equals("GUIDE", ignoreCase = true)) {
-                    repository.saveTicker("TSLA")
+                    repository.saveTicker("NVDA")
                     candles = emptyList()
                     isLoading = false
                     return@LaunchedEffect
@@ -99,7 +99,7 @@ class MainActivity : ComponentActivity() {
             fun saveTicker(nextTicker: String) {
                 val normalized = nextTicker.trim().uppercase()
                 scope.launch {
-                    repository.saveTicker(if (normalized == "GUIDE") "TSLA" else normalized)
+                    repository.saveTicker(if (normalized == "GUIDE") "NVDA" else normalized)
                 }
             }
 

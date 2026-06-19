@@ -58,7 +58,7 @@ data class UserLine(
 
 data class AppSettings(
     val orientationMode: OrientationMode = OrientationMode.System,
-    val ticker: String = "TSLA",
+    val ticker: String = "NVDA",
     val guideReturnTicker: String? = null,
     val timeframe: String = "D",
     val logScale: Boolean = false,
